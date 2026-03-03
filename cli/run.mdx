@@ -1,0 +1,108 @@
+---
+title: fdctl run
+description: Run the Firedancer validator process
+---
+
+Runs the validator. This command does not exit until the validator does, and an error in running the validator will be propagated to the exit code of the process.
+
+## Usage
+
+```bash
+fdctl run --config <path>
+```
+
+## Arguments
+
+<ParamField path="--config" type="string" required>
+  Path to a configuration TOML file to run the validator with
+</ParamField>
+
+## Output
+
+The command writes an abbreviated log output to `stderr` and nothing will be written to `stdout`.
+
+## Example
+
+```bash
+sudo fdctl run --config /home/firedancer/config.toml
+```
+
+## Running with Capabilities
+
+It is suggested to run this command as `sudo`, but the command can also be run with specific Linux capabilities instead of full root privileges.
+
+### Required Capabilities
+
+<AccordionGroup>
+  <Accordion title="CAP_NET_RAW">
+    **Reason**: Call `socket(2)` to bind to a raw socket for use by XDP
+    
+    Required for network packet processing using XDP (eXpress Data Path).
+  </Accordion>
+
+  <Accordion title="CAP_SYS_ADMIN (BPF operations)">
+    **Reason**: Call `bpf(2)` with the `BPF_OBJ_GET` command to initialize XDP
+    
+    Required for loading and managing BPF programs used by XDP.
+  </Accordion>
+
+  <Accordion title="CAP_SYS_ADMIN (User namespaces)">
+    **Reason**: Call `unshare(2)` with `CLONE_NEWUSER` to sandbox the process in a user namespace
+    
+    Only required on kernels which restrict unprivileged user namespaces.
+  </Accordion>
+
+  <Accordion title="CAP_SETUID">
+    **Reason**: Call `setresuid(2)` to switch uid to the sandbox user
+    
+    Not required if the UID is already the same as the sandbox UID.
+  </Accordion>
+
+  <Accordion title="CAP_SETGID">
+    **Reason**: Call `setresgid(2)` to switch gid to the sandbox user
+    
+    Not required if the GID is already the same as the sandbox GID.
+  </Accordion>
+
+  <Accordion title="CAP_SYS_RESOURCE (Memory locking)">
+    **Reason**: Call `rlimit(2)` to increase `RLIMIT_MEMLOCK` so all memory can be locked with `mlock(2)`
+    
+    Not required if the process already has a high enough limit.
+  </Accordion>
+
+  <Accordion title="CAP_SYS_RESOURCE (Thread priorities)">
+    **Reason**: Call `setpriority(2)` to increase thread priorities
+    
+    Not required if the process already has a nice value of -19.
+  </Accordion>
+
+  <Accordion title="CAP_SYS_RESOURCE (File descriptors)">
+    **Reason**: Call `rlimit(2)` to increase `RLIMIT_NOFILE` to allow more open files for Agave
+    
+    Not required if the resource limit is already high enough.
+  </Accordion>
+
+  <Accordion title="CAP_NET_BIND_SERVICE">
+    **Reason**: Call `bind(2)` to bind to a privileged port for serving metrics
+    
+    Only required if the bind port is below 1024.
+  </Accordion>
+</AccordionGroup>
+
+## Prerequisites
+
+Before running the validator, ensure you have:
+
+1. **Configured the operating system** using `fdctl configure init`
+2. **Created a valid configuration file** with all required settings
+3. **Generated or imported identity keys** for the validator
+
+<Warning>
+  The validator requires significant system resources and proper OS configuration. Make sure to run `fdctl configure init` before attempting to start the validator.
+</Warning>
+
+## Related Commands
+
+- [fdctl configure](/cli/configure) - Configure the operating system
+- [fdctl monitor](/cli/monitor) - Monitor a running validator
+- [fdctl keys](/cli/keys) - Manage validator keys

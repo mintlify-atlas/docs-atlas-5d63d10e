@@ -1,0 +1,156 @@
+---
+title: Building from Source
+description: Compile the Firedancer validator and associated tools from source code
+---
+
+Once you've installed all dependencies, you're ready to build Firedancer. This process will compile both Firedancer components and some Agave components that are currently required.
+
+## Basic Build
+
+To build the core Firedancer validator and Solana CLI tools:
+
+```bash
+make -j fdctl solana
+```
+
+<Note>
+You will need around **32GB of available memory** to build Firedancer. If you run out of memory during compilation, make can return a variety of errors.
+</Note>
+
+### Build Targets
+
+The build process creates two primary binaries:
+
+- **`fdctl`** — Firedancer control binary (short for Firedancer control)
+- **`solana`** — Solana CLI binary for running RPC commands
+
+<Tip>
+The Firedancer production validator is built as a single binary `fdctl`. You can start, stop, and monitor the Firedancer instance from this one program. The `solana` CLI binary can be built with make as well for convenience so you can run RPC commands like `solana transfer`.
+</Tip>
+
+## Architecture-Specific Builds
+
+Firedancer automatically detects the hardware it's being built on and enables architecture-specific instructions for maximum performance.
+
+<Warning>
+This means binaries built on one machine may not be able to run on another with different CPU capabilities.
+</Warning>
+
+### Building for a Specific Target
+
+If you need to target a different machine architecture, you can compile for a specific target by setting the `MACHINE` environment variable:
+
+```bash
+MACHINE=linux_gcc_x86_64 make -j fdctl solana
+```
+
+Available target configurations can be found in the `config/` directory.
+
+### Default Build Location
+
+The default target is `native`, and compiled binaries will be placed in:
+
+```
+./build/native/gcc/bin
+```
+
+## Development Build
+
+For developers who want to build and run a local development cluster:
+
+```bash
+./deps.sh +dev
+make -j run
+```
+
+<Note>
+The `make run` target runs the `fddev dev` command, which:
+- Ensures your system is configured correctly
+- Creates a genesis block and test keys
+- Starts a faucet
+- Launches a validator on your local machine
+</Note>
+
+## Updating Firedancer
+
+To update to a newer version of Firedancer:
+
+<Steps>
+  <Step title="Fetch latest tags">
+    ```bash
+    git fetch --tags
+    ```
+  </Step>
+
+  <Step title="Checkout new version">
+    ```bash
+    git checkout v0.xxx.yyyyy  # Replace with desired version
+    ```
+  </Step>
+
+  <Step title="Update submodules">
+    ```bash
+    git submodule update
+    ```
+  </Step>
+
+  <Step title="Rebuild binaries">
+    ```bash
+    make -j fdctl solana
+    ```
+  </Step>
+</Steps>
+
+## Build Troubleshooting
+
+### Out of Memory Errors
+
+If compilation fails due to memory constraints:
+
+1. Close other memory-intensive applications
+2. Reduce parallelism by using fewer jobs: `make -j4 fdctl solana`
+3. Consider adding swap space temporarily
+4. Build on a machine with more RAM
+
+### Submodule Issues
+
+If you encounter errors related to missing files or dependencies:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Clean Build
+
+To perform a clean rebuild:
+
+```bash
+make clean
+make -j fdctl solana
+```
+
+## Verifying Your Build
+
+After a successful build, verify the binaries were created:
+
+```bash
+ls -lh ./build/native/gcc/bin/fdctl
+ls -lh ./build/native/gcc/bin/solana
+```
+
+You should see both executables listed with their file sizes.
+
+### Check Version
+
+Verify the version of your built binary:
+
+```bash
+./build/native/gcc/bin/fdctl version
+```
+
+## Next Steps
+
+Now that you've successfully built Firedancer:
+
+- Review [Configuration](/getting-started/configuration) to set up your validator
+- Learn about [Running](/getting-started/running) the validator

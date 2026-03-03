@@ -1,0 +1,126 @@
+---
+title: "Frankendancer"
+description: "Learn about Frankendancer, the hybrid validator that combines Firedancer's high-performance networking with Agave's runtime and consensus."
+---
+
+# Frankendancer
+
+Firedancer is a new Solana validator with a new codebase, but it is being developed incrementally. To enable testing and deployment before the entire Solana protocol has been implemented, the project relies on the existing Agave validator code to provide functionality that is missing. This side-by-side configuration is referred to as "Frankendancer".
+
+<Info>
+  Frankendancer is currently available on both Solana testnet and mainnet-beta, allowing you to run a production validator today.
+</Info>
+
+## What Is Frankendancer?
+
+Frankendancer is a hybrid validator that uses parts of Firedancer and parts of Agave:
+
+- **Firedancer components:** Networking stack and block production
+- **Agave components:** Runtime and consensus mechanisms
+
+This hybrid approach allows you to benefit from Firedancer's performance improvements while the team continues developing the full independent validator.
+
+## Currently Implemented Components
+
+Firedancer has implemented the following high-performance components in Frankendancer:
+
+<CardGroup cols={2}>
+  <Card title="QUIC and UDP Networking" icon="network-wired">
+    High-performance kernel bypass networking for ingress, enabling faster packet processing and reduced latency.
+  </Card>
+  <Card title="Block Distribution Engine" icon="cubes">
+    Egress networking using kernel bypass, with a full reimplementation of erasure coding and the Solana turbine protocol for packet routing.
+  </Card>
+  <Card title="Signature Verification" icon="signature">
+    Custom AVX512 ED25519 implementation for fast cryptographic signature verification.
+  </Card>
+  <Card title="Block Packing Logic" icon="boxes-stacked">
+    Optimized logic for packing transactions into blocks during leader slots.
+  </Card>
+</CardGroup>
+
+<Note>
+  All other functionality is retained by Agave, including the runtime itself which tracks account state and executes transactions.
+</Note>
+
+## How Frankendancer Works
+
+Building and running a Firedancer validator also builds an Agave validator and runs it as a child process. The Agave process is fully built into and managed by Firedancer, and you do not need to start it up or otherwise configure it.
+
+**Key characteristics:**
+
+- Firedancer manages the Agave process automatically
+- No separate Agave configuration required
+- Uses the same `solana` CLI commands you're familiar with
+- Monitoring and metrics remain the same as Agave
+
+<Info>
+  Because of this side-by-side operation, existing knowledge and processes you have from running an Agave validator will likely apply to Firedancer too.
+</Info>
+
+## Performance Characteristics
+
+Frankendancer uses the Firedancer networking stack and block production components to perform better while leader. This provides several advantages:
+
+### Improved Leader Performance
+
+When your validator is leader, Frankendancer's optimized networking and block production components enable:
+- Faster transaction ingestion
+- More efficient block packing
+- Reduced latency in block distribution
+
+### DoS Mitigation
+
+The high-performance networking layer provides better protection against denial-of-service attacks through:
+- Efficient packet filtering
+- Optimized resource utilization
+- Kernel bypass networking reducing CPU overhead
+
+<Warning>
+  Although the networking layer is much faster, the performance of the Frankendancer validator may be bottlenecked by the legacy runtime and consensus code from Agave.
+</Warning>
+
+## Running Frankendancer
+
+If you're already familiar with running an Agave validator, you'll find Frankendancer operates with similar concepts and components. The validator heavily leans on the same operational patterns you're used to.
+
+**What stays the same:**
+- Command-line interface (`solana` CLI)
+- Monitoring and metrics
+- Key management
+- Configuration concepts
+
+**What's different:**
+- You use the `fdctl` command to manage the validator
+- Configuration is done through a TOML configuration file
+- The Agave process is managed automatically by Firedancer
+
+<Card title="Getting Started with Frankendancer" icon="rocket" href="/getting-started">
+  Learn how to install, configure, and run a Frankendancer validator node
+</Card>
+
+## The Path to Full Firedancer
+
+While you run Frankendancer, the Firedancer development team is working in parallel on replicating the functionality of the runtime and consensus code. The goal is to deliver a fully independent validator with no Agave components.
+
+This incremental development approach means:
+- You can benefit from performance improvements today
+- The validator is production-ready and battle-tested
+- The transition to full Firedancer will be seamless
+
+<Note>
+  Firedancer is beta software and you should expect hiccups when getting started with, and when operating the validator. The Firedancer development team can help diagnose any issues in the #firedancer channel in the [Solana Tech discord](https://discord.com/invite/solana).
+</Note>
+
+## Contributing and Community
+
+Firedancer is open source and being developed on GitHub. All contributions are welcome. Jump is currently the primary contributor as the project is in the initial development phase, but Firedancer is a decentralized, community validator and project stewardship will be transitioned to the community as the project matures.
+
+<CardGroup cols={2}>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/firedancer-io/firedancer">
+    View the source code and contribute to the project
+  </Card>
+  <Card title="Discord Community" icon="discord" href="https://discord.com/invite/solana">
+    Join the #firedancer channel for support and discussion
+  </Card>
+</CardGroup>

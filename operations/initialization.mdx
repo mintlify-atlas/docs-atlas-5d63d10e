@@ -1,0 +1,192 @@
+---
+title: System Initialization
+description: Configure your system to run Firedancer using fdctl configure commands
+---
+
+The `fdctl configure` command sets up your host system so Firedancer can run correctly. This step must be performed after each system reboot to reconfigure kernel parameters, huge pages, and networking devices.
+
+## Overview
+
+The configure command performs several critical system setup tasks:
+
+- **hugetlbfs** - Reserves huge (2MiB) and gigantic (1GiB) pages for Firedancer
+- **sysctl** - Sets required kernel parameters
+- **hyperthreads** - Checks hyperthreaded pairs for critical CPU cores
+- **bonding** - Prepares bonded network devices for XDP networking
+- **ethtool-channels** - Configures network device channel count
+- **ethtool-offloads** - Disables incompatible offload features
+- **ethtool-loopback** - Disables tx-udp-segmentation on loopback
+
+## Configure Modes
+
+You run configure with `fdctl configure <mode> <stage>...` where mode is one of:
+
+<Steps>
+  <Step title="check">
+    Verifies if each stage is already configured. Never requires privileges and makes no changes to the system. Exits with an error if stages are not properly configured.
+  </Step>
+  
+  <Step title="init">
+    Configures the provided stages if they are not already configured. Only requires privileges if it needs to actually change something.
+  </Step>
+  
+  <Step title="fini">
+    Unconfigures (reverses) the stage if it is reversible. Useful for cleanup.
+  </Step>
+</Steps>
+
+You can specify individual stages or use `all` to configure everything:
+
+```bash
+sudo fdctl configure init all --config ~/config.toml
+```
+
+## Configuration Stages
+
+### hugetlbfs
+
+Reserves huge (2MiB) and gigantic (1GiB) memory pages from the Linux kernel for Firedancer. Almost all memory in Firedancer is allocated from these pages for performance reasons.
+
+This is a two-step process:
+
+1. Increases the number of huge and gigantic pages in the kernel by modifying `/sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages`
+2. Assigns pages to Firedancer by creating hugetlbfs mounts at `/mnt/.fd/.gigantic/` and `/mnt/.fd/.huge`
+
+<Warning>
+  Run the hugetlbfs step immediately when the system boots. If run later, it may fail because operating system memory becomes fragmented and large contiguous blocks cannot be reserved.
+</Warning>
+
+**Privilege requirements:** Root privileges required (capabilities not sufficient)
+
+**Persistence:** Must be run after each reboot
+
+The `fini` mode unmounts the filesystems and returns pages to the kernel global pool, but will not decrease the global pool size.
+
+### sysctl
+
+Configures kernel parameters for optimal Firedancer performance. The stage only increases values to meet minimums and will not decrease them if the minimum is already met.
+
+| Sysctl | Minimum | Required | Description |
+|--------|---------|----------|-------------|
+| `vm.max_map_count` | 1000000 | Yes | Agave accounts database requires mapping many files |
+| `fs.file-max` | 1024000 | Yes | Agave accounts database requires opening many files |
+| `fs.nr_open` | 1024000 | Yes | Agave accounts database requires opening many files |
+| `net.ipv4.conf.lo.rp_filter` | 2 | Yes | Required for QUIC over loopback |
+| `net.ipv4.conf.lo.accept_local` | 1 | Yes | Required for QUIC over loopback |
+| `net.core.bpf_jit_enable` | 1 | No | Makes BPF networking faster |
+| `kernel.numa_balancing` | 0 | No | Firedancer manages NUMA, rebalancing hurts performance |
+
+<Note>
+  Non-required sysctls produce warnings if not set correctly, but configuration will proceed normally.
+</Note>
+
+**Privilege requirements:** Root or `CAP_SYS_ADMIN`
+
+The `fini` mode does nothing - kernel parameters are never reduced or changed back.
+
+### hyperthreads
+
+Firedancer has two critical tiles that must run serially on dedicated cores:
+
+- **pack** - Schedules transactions for execution when leader
+- **poh** - Performs repeated SHA256 hashes and stamps blocks when leader
+
+On hyperthreaded CPUs, this stage checks if the hyperthreaded pairs of these tiles are used or online, and prints warnings if they should be disabled for optimal performance.
+
+<Note>
+  When using `auto` layout, Firedancer ensures no other tiles run on the hyperthread pairs. With manual layouts, you must verify this yourself.
+</Note>
+
+This stage has no dependencies but is dependent on your configuration topology. You should disable the CPUs specified in warnings for best performance.
+
+### bonding
+
+Validator hosts commonly use bonded network devices for increased bandwidth and fault tolerance. Common Linux distributions use bonding driver defaults incompatible with XDP mode on some network drivers.
+
+Firedancer reconfigures bonding parameters to tolerate brief downtime when configuring XDP by increasing timeout parameters in `/sys/class/net/bond0/bonding/` to five seconds:
+
+- `miimode`
+- `downdelay`
+- `peer_notif_delay`
+
+**Privilege requirements:** Root privileges required (capabilities not sufficient)
+
+### ethtool-channels
+
+Configures receive side scaling (RSS) to improve network performance. Each `net` tile serves one network queue, so this stage modifies the network device to steer all Firedancer packets to the proper queues.
+
+Three modes are available (set in your configuration):
+
+<Accordion title="simple mode (default)">
+  Modifies the combined channel count to match the number of `net` tiles. Works with all network devices but reduces queue count system-wide, potentially impacting non-Firedancer traffic.
+  
+  Similar to running:
+  ```bash
+  ethtool --set-channels <device> combined <N>
+  ```
+</Accordion>
+
+<Accordion title="dedicated mode">
+  Reserves a dedicated hardware queue for each net tile. More advanced and may not work with all devices. Modifies the RXFH indirection table and installs ntuple rules to direct Firedancer traffic to dedicated queues while sharding other traffic across the rest. Better performance for both Firedancer and non-Firedancer traffic.
+</Accordion>
+
+<Accordion title="auto mode">
+  Attempts dedicated mode first, automatically falls back to simple mode if any failure occurs.
+</Accordion>
+
+**Privilege requirements:** Root privileges required (capabilities not sufficient)
+
+**Persistence:** Must be run after each reboot
+
+### ethtool-offloads
+
+XDP is incompatible with certain network device features that must be disabled:
+
+- `rx-udp-gro-forwarding`
+- GRE segmentation offload
+
+Similar to running:
+```bash
+ethtool --offload <device> <offload> off
+```
+
+**Privilege requirements:** Root privileges required (capabilities not sufficient)
+
+**Persistence:** Must be run after each reboot
+
+### ethtool-loopback
+
+XDP is incompatible with localhost UDP traffic using `tx-udp-segmentation`. This feature must be disabled when connecting Agave clients to Firedancer over loopback or when using Frankendancer.
+
+Runs the command:
+```bash
+ethtool --offload lo tx-udp-segmentation off
+```
+
+**Privilege requirements:** Root privileges required (capabilities not sufficient)
+
+**Persistence:** Must be run after each reboot
+
+## Complete Initialization
+
+To initialize all stages at once:
+
+```bash
+sudo fdctl configure init all --config ~/config.toml
+```
+
+<Note>
+  It is strongly recommended to run the configure command automatically when your system boots. All stages need to be reconfigured after each reboot.
+</Note>
+
+You can check the current configuration status without making changes:
+
+```bash
+fdctl configure check all --config ~/config.toml
+```
+
+To remove all configuration (useful for troubleshooting):
+
+```bash
+sudo fdctl configure fini all --config ~/config.toml
+```

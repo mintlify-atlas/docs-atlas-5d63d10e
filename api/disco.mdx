@@ -1,0 +1,361 @@
+---
+title: Disco
+description: Distributed compute orchestration and tile-based networking framework
+---
+
+Disco is Firedancer's distributed computing framework that orchestrates high-performance data processing through a tile-based architecture. It provides the infrastructure for parallel transaction processing, network I/O, and inter-tile communication.
+
+## Overview
+
+Disco implements a dataflow-oriented architecture where computational work is organized into specialized "tiles" (processing units) that communicate via Tango's high-performance IPC primitives. This design enables horizontal scaling and efficient resource utilization.
+
+<Note>
+Disco tiles can run as threads in a single process or distributed across multiple processes, with the same IPC mechanisms working transparently in both configurations.
+</Note>
+
+## Architecture
+
+### Transaction Processing Pipeline
+
+The Disco architecture follows a filtering and validation pipeline:
+
+```
+Network → Verify → Dedup → Pack → Execute → Shred → Network
+  ↓         ↓        ↓       ↓       ↓         ↓        ↓
+ [net]   [verify] [dedup] [pack] [execle] [store]  [shred]
+ tiles    tiles    tile    tile    tiles    tile    tiles
+```
+
+<Accordion title="Pipeline Stages">
+
+### Network Ingress (net tiles)
+- Receive raw packets from NICs via AF_XDP, DPDK, or other interfaces
+- QUIC protocol handling
+- Initial packet parsing and routing
+- Multiple tiles for horizontal scaling
+
+### Signature Verification (verify tiles)
+- Ed25519 signature verification
+- Transaction signature validation
+- Deduplication tagging (64-bit tags)
+- Parallel processing across multiple cores
+
+### Deduplication (dedup tile)
+- Filter duplicate transactions
+- Tag-based deduplication scheme
+- Maintains recent transaction cache
+- Multiplexes from verify tiles
+
+### Block Packing (pack tile)
+- Transaction scheduling
+- Block assembly
+- Compute unit optimization
+- Priority fee handling
+
+### Execution (execle tiles)
+- Transaction execution
+- Runtime state updates
+- Parallel execution across banking stages
+- Slot sequencing
+
+### Block Store (store tile)
+- Persistent block storage
+- Shred management
+- Historical data access
+
+### Shred Generation (shred tiles)
+- FEC encoding
+- Merkle tree generation
+- Network distribution
+
+</Accordion>
+
+## Core Components
+
+<Accordion title="Tiles & Topology">
+
+### Tile System (`tiles.h`)
+
+Tiles are independent processing units with defined inputs and outputs:
+
+```c
+// Tile characteristics:
+// - Single-threaded execution
+// - Non-blocking I/O
+// - Explicit dependencies via mcache/dcache
+// - CPU affinity control
+```
+
+### Topology (`topo/`)
+
+- Defines tile interconnections
+- Configures mcache/dcache links
+- NUMA-aware placement
+- Load balancing configuration
+
+**Key considerations:**
+- Place tiles near their NUMA node
+- Minimize cross-NUMA communication
+- Deep queues for buffering (mcache/dcache)
+
+</Accordion>
+
+<Accordion title="Network Processing">
+
+### Network Tile (`net/`)
+
+**Features:**
+- Multi-NIC support
+- AF_XDP zero-copy networking
+- Hardware offload support (checksum, RSS)
+- Flow steering to verify tiles
+
+**Packet MTU limits:**
+```c
+#define FD_NET_MTU        (2048UL) // Max packet size
+#define FD_TPU_MTU        (1232UL) // Max transaction size
+#define FD_GOSSIP_MTU     (1232UL) // Gossip packet size
+```
+
+### QUIC (`quic/`)
+
+- RFC 9000/9001 compliant implementation
+- TLS 1.3 encryption
+- Connection multiplexing
+- Flow control and congestion control
+- Load balancing via connection ID steering
+
+### Netlink (`netlink/`)
+
+- Linux kernel networking interface
+- Route management
+- Interface configuration
+
+</Accordion>
+
+<Accordion title="Transaction Processing">
+
+### Signature Verification
+
+Distributed across multiple verify tiles:
+```c
+// fd_txn_m.h - Transaction metadata
+// fd_txn_p.h - Transaction payload
+```
+
+**Flow:**
+1. Receive transaction from net tile (mcache)
+2. Read transaction payload (dcache)
+3. Verify Ed25519 signatures (Ballet)
+4. Compute dedup tag
+5. Publish to dedup tile (mcache)
+
+### Deduplication (`dedup/`)
+
+**Tag-based scheme:**
+- 64-bit tags generated during signature verification
+- Recent transaction tracking
+- Tag collision handling
+- Configurable time window
+
+### Block Packing (`pack/`)
+
+**Scheduling algorithms:**
+- Greedy packing by compute units
+- Priority fee optimization
+- Account lock conflict resolution
+- Microblock generation
+
+**Capacity limits:**
+```c
+#define FD_MAX_TXN_PER_SLOT_CU    98039UL  // CU-limited
+#define FD_MAX_TXN_PER_SLOT_SHRED 272635UL // Shred-limited
+#define FD_MAX_TXN_PER_SLOT       98039UL  // Effective limit
+```
+
+</Accordion>
+
+<Accordion title="Data Management">
+
+### Shred Processing (`shred/`)
+
+**Shred structure:**
+- Data shreds: Transaction payloads
+- Code shreds: FEC redundancy
+- Merkle proofs for verification
+
+```c
+#define FD_SHRED_STORE_MTU (78656UL)  // fd_fec_set size
+#define FD_SHRED_OUT_MTU   (157UL)    // Shred metadata
+```
+
+**Signature encoding:**
+```c
+// fd_disco_shred_out_shred_sig:
+// - slot (32 bits)
+// - fec_set_idx (15 bits)
+// - is_turbine (1 bit)
+// - shred_idx (15 bits)
+```
+
+### Block Store (`store/`)
+
+- Persistent storage backend
+- Shred retrieval
+- Snapshot management
+- Archival operations
+
+### Archiver (`archiver/`)
+
+- Long-term block storage
+- Compression and deduplication
+- Off-chain data export
+
+</Accordion>
+
+<Accordion title="Monitoring & Debugging">
+
+### Metrics (`metrics/`)
+
+**Per-tile metrics:**
+- Message throughput
+- Processing latency
+- Queue depths
+- Error counts
+
+### Diagnostics (`diag/`)
+
+- Live tile inspection
+- Performance profiling
+- Bottleneck detection
+
+### Events (`events/`)
+
+- Structured event logging
+- Tile lifecycle events
+- Error reporting
+- Performance events
+
+### Trace (`trace/`)
+
+- Dataflow tracing
+- Message flow visualization
+- Latency analysis
+
+### PCAP (`pcap/`)
+
+- Packet capture support
+- Replay capabilities
+- Network debugging
+
+</Accordion>
+
+## Signal Encoding
+
+Disco uses the Tango signature field (`sig` in `fd_frag_meta_t`) to encode routing and filtering information:
+
+<CodeGroup>
+
+```c Network Multiplexer
+// fd_disco_netmux_sig: Encode packet metadata
+ulong sig = fd_disco_netmux_sig(
+  hash_ip_addr,  // Source IP hash (20 bits)
+  hash_port,     // Source port
+  ip_addr,       // Destination IP (32 bits)
+  proto,         // Protocol (8 bits: TPU/QUIC/GOSSIP)
+  hdr_sz         // Header size (4 bits compressed)
+);
+
+// Extract fields
+ulong proto = fd_disco_netmux_sig_proto(sig);
+uint ip = fd_disco_netmux_sig_ip(sig);
+ulong hdr_sz = fd_disco_netmux_sig_hdr_sz(sig);
+```
+
+```c PoH Signaling
+// fd_disco_poh_sig: Proof of History events
+ulong sig = fd_disco_poh_sig(
+  slot,         // Current slot
+  pkt_type,     // MICROBLOCK/BECAME_LEADER/FEAT_ACT_SLOT
+  execle_tile   // Target execution tile (6 bits)
+);
+```
+
+```c Execution Signaling
+// fd_disco_execle_sig: Execution tile routing
+ulong sig = fd_disco_execle_sig(
+  slot,      // Slot number (32 bits)
+  pack_idx   // Pack index (32 bits)
+);
+```
+
+</CodeGroup>
+
+## Protocol Constants
+
+```c
+// Destination protocols
+#define DST_PROTO_OUTGOING (0UL)
+#define DST_PROTO_TPU_UDP  (1UL)
+#define DST_PROTO_TPU_QUIC (2UL)
+#define DST_PROTO_SHRED    (3UL)
+#define DST_PROTO_REPAIR   (4UL)
+#define DST_PROTO_GOSSIP   (5UL)
+#define DST_PROTO_SEND     (6UL)
+
+// PoH packet types
+#define POH_PKT_TYPE_MICROBLOCK    (0UL)
+#define POH_PKT_TYPE_BECAME_LEADER (1UL)
+#define POH_PKT_TYPE_FEAT_ACT_SLOT (2UL)
+```
+
+## Additional Features
+
+<Accordion title="Specialized Components">
+
+### Bundle Processing (`bundle/`)
+- Transaction bundle handling
+- Atomic bundle execution
+- Bundle scheduling
+
+### Keyguard (`keyguard/`)
+- Private key management
+- Signature generation service
+- Hardware security module integration
+
+### Genesis (`genesis/`)
+- Genesis block processing
+- Initial state configuration
+
+### Plugin System (`plugin/`)
+- External plugin integration
+- Custom tile implementations
+
+### GUI (`gui/`)
+- Web-based monitoring interface
+- Real-time metrics visualization
+
+</Accordion>
+
+## Performance Considerations
+
+- **NUMA Awareness**: Place tiles and workspaces on same NUMA node
+- **Deep Queues**: Mcache/dcache sizing for burst handling
+- **CPU Affinity**: Pin tiles to specific cores
+- **Zero-Copy**: Direct memory access via Tango dcache
+- **Horizontal Scaling**: Multiple tiles of same type for throughput
+
+## Header Files
+
+```c
+#include "disco/fd_disco.h"      // Main header
+#include "disco/fd_disco_base.h" // Base definitions
+#include "disco/tiles.h"          // Tile framework
+```
+
+## Related Components
+
+- [Tango](/api/tango) - IPC primitives used by Disco tiles
+- [Waltz](/api/waltz) - Network protocol implementations
+- [Flamenco](/api/flamenco) - Solana runtime integration
+- [Ballet](/api/ballet) - Cryptographic operations

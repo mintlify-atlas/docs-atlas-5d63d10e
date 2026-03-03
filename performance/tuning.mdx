@@ -1,0 +1,203 @@
+---
+title: Performance Tuning
+description: Learn how to tune Firedancer validator performance by configuring tile counts and CPU core assignments for optimal throughput
+---
+
+## Overview
+
+The Firedancer validator is composed of a handful of threads, each performing one of fifteen distinct jobs. Some jobs only need one thread to do them, but certain jobs require many threads performing the same work in parallel.
+
+Each thread is given a CPU core to run on, and threads take ownership of the core: never sleeping or letting the operating system use it for another purpose. The combination of a job, the thread it runs on, and the CPU core it is assigned to is called a **tile**.
+
+## Tile Types
+
+The fifteen kinds of tiles are:
+
+| Tile | Description |
+|------|-------------|
+| `net` | Sends and receives network packets from the network device |
+| `quic` | Receives transactions from clients, performing all connection management and packet processing to manage and implement the QUIC protocol |
+| `verify` | Verifies the cryptographic signature of incoming transactions, filtering invalid ones |
+| `dedup` | Checks for and filters out duplicated incoming transactions |
+| `pack` | Collects incoming transactions and smartly schedules them for execution when you are leader |
+| `bank` | Executes transactions that have been scheduled when you are leader |
+| `poh` | Continuously hashes in the background, and mixes the hash in with executed transactions to prove passage of time |
+| `shred` | Distributes block data to the network when leader, and receives and retransmits block data when not leader |
+| `store` | Receives block data when you are leader, or from other nodes when they are leader, and stores it locally in a database on disk |
+| `metric` | Collects monitoring information about other tiles and serves it on an HTTP endpoint |
+| `sign` | Holds the validator private key, and receives and responds to signing requests from other tiles |
+| `resolv` | Resolves address lookup tables before transactions are scheduled |
+| `diag` | Counts context switches and diagnostic information of other tiles |
+| `plugin` | Provides data to the `gui` tile |
+| `gui` | Receives data from the validator and serves an HTTP endpoint to clients to view it |
+
+<Note>
+These tiles communicate with each other via shared memory queues. The work each tile performs and how they communicate with each other is fixed, but the count of each tile kind and which CPU cores they are assigned to is set by your configuration.
+</Note>
+
+## Default Configuration
+
+The default configuration provided if no options are specified is given in the `default.toml` file:
+
+```toml
+[layout]
+    affinity = "1-16"
+    agave_affinity = "17-31"
+    net_tile_count = 1
+    quic_tile_count = 1
+    verify_tile_count = 4
+    bank_tile_count = 2
+    shred_tile_count = 1
+```
+
+Only `net`, `quic`, `verify`, `bank`, and `shred` tile counts are configurable. There may be 0 or 1 `plugin` and `gui` tiles if the GUI is disabled or enabled. The rest are fixed at one thread each.
+
+## CPU Core Assignment
+
+The assignment of tiles to CPU cores is determined by the `affinity` string. The Frankendancer validator currently starts an Agave process to perform functionality like replay, gossip, and repair that is not yet implemented in Firedancer. The `agave_affinity` string determines the CPU cores that are given to the threads of this Agave process.
+
+<Warning>
+Each tile needs a dedicated CPU core and it will be saturated at 100% utilization. The Agave process will run on the cores under the `agave_affinity` and this should not overlap with tile cores.
+</Warning>
+
+### Affinity Syntax
+
+You can specify CPU cores using the following syntax:
+
+- Single core: `"0"`
+- Range: `"0-10"`
+- Range with stride: `"0-10/2"` (useful for hyperthreading)
+- Floating tiles: `"f5"` (next 5 tiles are not pinned)
+
+**Example:**
+
+If Firedancer has six tiles numbered 0..5, and the affinity is specified as `f1,0-1,2-4/2,f1`:
+
+| Tile | Core |
+|------|------|
+| 0 | floating |
+| 1 | 0 |
+| 2 | 1 |
+| 3 | 2 |
+| 4 | 4 |
+| 5 | floating |
+
+<Tip>
+You can set the `affinity` and `agave_affinity` to `"auto"`. This will let Firedancer detect the topology of the system and automatically configure the assignment of the tiles to CPU cores.
+</Tip>
+
+## Performance Characteristics
+
+The following table shows the performance of the adjustable tiles on an Intel Icelake core, along with some performance notes and recommendations for `mainnet-beta`:
+
+| Tile | Default | Notes |
+|------|---------|-------|
+| `net` | 1 | Handles >1M TPS per tile. Designed to scale out for future network conditions, but there is no need to run more than 1 net tile at the moment on `mainnet-beta` |
+| `quic` | 1 | Handles >1M TPS per tile. Designed to scale out for future network conditions, but there is no need to run more than 1 QUIC tile at the moment on `mainnet-beta` |
+| `verify` | 4 | Handles 20-40k TPS per tile. Recommend running many verify tiles, as signature verification is the primary bottleneck of the application |
+| `bank` | 4 | Handles 20-40k TPS per tile, with diminishing returns from adding more tiles. Designed to scale out for future network conditions, but 4 tiles is enough to handle current `mainnet-beta` conditions. Can be increased further when benchmarking to test future network performance |
+| `shred` | 1 | Throughput is mainly dependent on cluster size, 1 tile is enough to handle current `mainnet-beta` conditions. In benchmarking, if the cluster size is small, 1 tile can handle >1M TPS |
+
+## Example Configurations
+
+<Tabs>
+  <Tab title="AMD Zen3 (32 cores)">
+    ```toml
+    [layout]
+      affinity = "14-57,f1"
+      agave_affinity = "58-63"
+      verify_tile_count = 30
+      bank_tile_count = 6
+      shred_tile_count = 1
+    ```
+    
+    This configuration is optimized for an AMD EPYC 7513 32-Core Processor with 64 logical cores.
+  </Tab>
+  
+  <Tab title="AMD Zen4 (64 cores)">
+    ```toml
+    [layout]
+      verify_tile_count = 42
+      bank_tile_count = 20
+      shred_tile_count = 1
+    ```
+    
+    This configuration is optimized for an AMD EPYC 9554P with 64 physical cores and 128 logical cores.
+  </Tab>
+  
+  <Tab title="Intel Icelake (80 cores)">
+    ```toml
+    [layout]
+      affinity = "28-78/2,1-69/2"
+      agave_affinity = "71-79/2"
+      verify_tile_count = 33
+      bank_tile_count = 19
+      shred_tile_count = 1
+    ```
+    
+    This configuration is optimized for a dual-socket Intel Icelake CPU with 80 physical cores (40 per socket).
+  </Tab>
+</Tabs>
+
+## Monitoring Tile Performance
+
+You can monitor tile performance using the `fdctl monitor` command:
+
+```bash
+fdctl monitor --config ~/config.toml
+```
+
+The output shows important metrics for each tile:
+
+- `% finish` - Percentage of time the tile is occupied doing work
+- `overnp cnt` - Indicates the tile is being overrun and dropping transactions
+- `% backp` - Time spent in backpressure waiting for downstream tiles
+
+If you see tiles at 100% finish with increasing overrun counts, you need to increase the tile count for that tile type.
+
+<Note>
+For more information on monitoring, see the [Monitoring](/operations/monitoring) guide.
+</Note>
+
+## Tuning Strategy
+
+1. **Start with defaults** - Begin with the default configuration
+2. **Monitor performance** - Use `fdctl monitor` to identify bottlenecks
+3. **Increase verify tiles** - Signature verification is often the bottleneck
+4. **Adjust bank tiles** - Add bank tiles if execution is slow (diminishing returns)
+5. **Verify no overlap** - Ensure `affinity` and `agave_affinity` don't overlap
+6. **Test under load** - Use benchmarking tools to validate your configuration
+
+## Additional Considerations
+
+### Memory Configuration
+
+For optimal performance, place the ledger in memory rather than on disk:
+
+```toml
+[ledger]
+  path = "/data/shm/{name}/ledger"
+```
+
+### RPC Settings
+
+Disable expensive RPC features when not needed:
+
+```toml
+[rpc]
+  transaction_history = false
+  extended_tx_metadata_storage = false
+```
+
+### Network Configuration
+
+Use XDP for best network performance:
+
+```toml
+[net]
+  provider = "xdp"
+  
+  [net.xdp]
+    xdp_mode = "drv"  # Use driver mode for best performance
+    xdp_zero_copy = true  # Enable zero-copy for high throughput
+```

@@ -1,0 +1,435 @@
+---
+title: Block Packing Internals
+description: Internal architecture of Firedancer's block packing system for transaction prioritization and microblock scheduling
+---
+
+The pack subsystem prioritizes and schedules Solana transactions to maximize validator profitability while respecting consensus-critical resource limits.
+
+## Overview
+
+Firedancer's pack system:
+- Maintains a pool of pending transactions
+- Prioritizes transactions by fee/compute unit ratio
+- Schedules transactions into microblocks
+- Respects consensus-critical limits (cost, data size)
+- Handles account conflicts and write locks
+- Supports atomic transaction bundles
+- Tracks per-account write costs
+
+## Core Concepts
+
+### Transaction Ordering
+
+Transactions are prioritized by:
+
+```c
+/* Returns 1 if x.rewards/x.compute < y.rewards/y.compute */
+```
+
+The pack system uses:
+- **rewards**: Transaction fee in lamports
+- **compute_est**: Estimated compute units
+
+Transactions with higher reward-to-compute ratios are scheduled first.
+
+### Consensus-Critical Limits
+
+```c
+struct fd_pack_limits {
+  ulong max_cost_per_block;          /* Total cost units allowed */
+  ulong max_vote_cost_per_block;     /* Vote transaction cost limit */
+  ulong max_write_cost_per_acct;     /* Per-account write cost limit */
+  ulong max_data_bytes_per_block;    /* Includes txn + microblock headers */
+  ulong max_txn_per_microblock;      /* Implementation limit */
+  ulong max_microblocks_per_block;   /* Implementation limit */
+};
+```
+
+<Info>
+These limits are either consensus-critical (agreed cluster-wide) or implementation-specific (Firedancer memory bounds). A block exceeding consensus limits is invalid.
+</Info>
+
+### Microblock Overhead
+
+```c
+/* Each non-empty microblock has 48 bytes overhead:
+   - 32 byte hash
+   - 8 byte hash count
+   - 8 byte transaction count */
+#define MICROBLOCK_DATA_OVERHEAD 48UL
+```
+
+Empty microblocks are dropped to avoid this overhead.
+
+## Data Structures
+
+### Transaction Ordering Structure
+
+```c
+struct fd_pack_private_ord_txn {
+  union {
+    fd_txn_p_t   txn[1];  /* Transaction payload */
+    fd_txn_e_t   txn_e[1];
+    struct{ uchar _sig_cnt; wrapped_sig_t sig; };
+  };
+
+  int root;  /* Which tree: pending, vote, bundle, or penalty */
+
+  ushort sigmap_next;  /* Signature map chain */
+  ushort sigmap_prev;
+
+  ulong expires_at;    /* Expiration time */
+  ulong expq_idx;      /* Position in expiration priority queue */
+
+  ushort noncemap_next;  /* Nonce map chain */
+  ushort noncemap_prev;
+
+  uint __attribute__((aligned(64))) 
+       rewards;        /* In Lamports */
+  uint compute_est;    /* In compute units */
+
+  /* Treap fields for priority ordering */
+  ushort left;
+  ushort right;
+  ushort parent;
+  ushort prio;
+  ushort prev;
+  ushort next;
+
+  ushort skip;  /* Skip counter for blocked transactions */
+
+  FD_PACK_BITSET_DECLARE( rw_bitset );  /* All accounts referenced */
+  FD_PACK_BITSET_DECLARE(  w_bitset );  /* Write-locked accounts */
+};
+```
+
+<Note>
+The structure is carefully designed with no padding between the union and other fields, allowing pointer casting between `fd_txn_p_t` and the full structure.
+</Note>
+
+### Account Address Usage
+
+```c
+struct fd_pack_private_addr_use_record {
+  fd_acct_addr_t key; /* Account address */
+  union {
+    ulong in_use_by;    /* Bitmask: which banks are using it */
+    ulong total_cost;   /* Total cost units for write tracking */
+    struct { 
+      uint   carried_cost;  /* Cost carried from previous */
+      ushort ref_cnt;       /* Reference count */
+      ushort last_use_in;   /* Last use transaction index */
+    };
+  };
+};
+```
+
+This structure serves three purposes:
+1. Track which accounts are in use by executing microblocks
+2. Track total write cost per account (consensus limit)
+3. Track bundle-specific account usage
+
+## Transaction Trees
+
+Pack maintains multiple treaps (randomized binary search trees) for different transaction categories:
+
+### Root Types
+
+```c
+#define FD_ORD_TXN_ROOT_FREE            0  /* Available slot */
+#define FD_ORD_TXN_ROOT_PENDING         1  /* Normal pending txn */
+#define FD_ORD_TXN_ROOT_PENDING_VOTE    2  /* Vote transaction */
+#define FD_ORD_TXN_ROOT_PENDING_BUNDLE  3  /* Bundle transaction */
+#define FD_ORD_TXN_ROOT_PENALTY(idx)    (4 | (idx)<<8)  /* Penalty treap */
+```
+
+**Pending treap**: Regular transactions ordered by reward/compute
+
+**Vote treap**: Vote transactions (separate cost limit)
+
+**Bundle treap**: Atomic transaction bundles
+
+**Penalty treaps**: Transactions blocked on specific accounts
+
+### Penalty Treaps
+
+When a transaction can't be scheduled due to account conflicts:
+1. Moved to penalty treap for the conflicting account
+2. Checked again when that account becomes available
+3. Avoids repeatedly checking transactions that can't execute
+
+## Bitset Optimization
+
+Pack uses bitsets to quickly check account conflicts:
+
+```c
+FD_PACK_BITSET_DECLARE( rw_bitset );  /* All accounts referenced */
+FD_PACK_BITSET_DECLARE(  w_bitset );  /* Write-locked accounts */
+```
+
+### Bitset Assignment
+
+```c
+struct fd_pack_bitset_acct_mapping {
+  fd_acct_addr_t key;      /* Account address */
+  ulong          ref_cnt;  /* Reference count */
+  
+  fd_pack_ord_txn_t * first_instance;
+  int                 first_instance_was_write;
+  
+  ushort bit;  /* Bit index or special value */
+};
+```
+
+**Special bit values:**
+- `FD_PACK_BITSET_FIRST_INSTANCE`: Account referenced by only one transaction
+- `FD_PACK_BITSET_SLOWPATH`: Too many accounts, use slow path
+
+<Info>
+Accounts referenced by only one transaction don't need a bit allocated. This optimization is important as most accounts are only touched by a single transaction.
+</Info>
+
+## Bundle Support
+
+Bundles are sequences of 1-5 transactions that execute atomically:
+
+```c
+#define FD_PACK_MAX_TXN_PER_BUNDLE 5UL
+```
+
+### Bundle Flags
+
+```c
+#define FD_TXN_P_FLAGS_IS_SIMPLE_VOTE     ( 1U)
+#define FD_TXN_P_FLAGS_BUNDLE             ( 2U)
+#define FD_TXN_P_FLAGS_INITIALIZER_BUNDLE ( 4U)
+#define FD_TXN_P_FLAGS_SANITIZE_SUCCESS   ( 8U)
+#define FD_TXN_P_FLAGS_EXECUTE_SUCCESS    (16U)
+#define FD_TXN_P_FLAGS_FEES_ONLY          (32U)
+#define FD_TXN_P_FLAGS_DURABLE_NONCE      (64U)
+```
+
+### Initializer Bundle State Machine
+
+```c
+/* Bundle initialization states: */
+#define FD_PACK_IB_STATE_NOT_INITIALIZED 0  /* Starting state */
+#define FD_PACK_IB_STATE_PENDING         1  /* Bundle scheduled */
+#define FD_PACK_IB_STATE_FAILED          2  /* Bundle failed */
+#define FD_PACK_IB_STATE_READY           3  /* Bundle succeeded */
+```
+
+Initializer bundles must succeed before normal bundles can be scheduled:
+
+1. **NOT_INITIALIZED**: Block starts, no initializer bundle
+2. **PENDING**: Initializer bundle scheduled, awaiting result
+3. **FAILED**: Initializer bundle failed (bug, insufficient balance, expired blockhash)
+4. **READY**: Initializer bundle succeeded, normal bundles can proceed
+
+## Scheduling Algorithm
+
+### Account Conflict Detection
+
+Before scheduling a transaction:
+
+```c
+// Check if any read/write accounts are in use
+if( rw_bitset & in_use_bitset ) {
+  // Account conflict - can't schedule
+  // Move to penalty treap
+}
+
+// Check if any write accounts exceed cost limit
+if( write_cost_for_account + txn_cost > max_write_cost_per_acct ) {
+  // Would exceed per-account write limit
+  // Move to penalty treap
+}
+```
+
+### Scheduling Steps
+
+1. **Select highest priority transaction** from appropriate treap
+2. **Check resource limits**: cost, data bytes, microblock capacity
+3. **Check account conflicts**: read/write locks, write cost limits
+4. **Reserve accounts**: mark as in-use by this microblock
+5. **Update resource usage**: cost, data bytes, write costs
+6. **Add to microblock**: append transaction to current microblock
+7. **Repeat** until microblock full or no schedulable transactions
+
+### Skip Counter Optimization
+
+```c
+ushort skip;  /* Skip counter for blocked transactions */
+```
+
+If a transaction is skipped multiple times for persistent reasons:
+- Increment skip counter
+- Skip quickly without full conflict checking
+- Compressed slot number stored when threshold reached
+- Re-evaluated when slot changes
+
+```c
+/* skip counter states:
+   [1, FD_PACK_SKIP_CNT]:     Skip this many more times
+   >FD_PACK_SKIP_CNT:         Compressed slot to skip until */
+```
+
+## Write Cost Tracking
+
+Per-account write costs are tracked to enforce consensus limits:
+
+```c
+#define DEFAULT_WRITTEN_LIST_MAX 16384UL
+```
+
+If more than 16,384 accounts are written in a block:
+- Clear entire writer cost map instead of individual entries
+- Avoids overhead of tracking too many individual accounts
+
+### Top Writers Heap
+
+```c
+#define FD_PACK_TOP_WRITERS_CNT (5UL)
+```
+
+Tracks the top 5 accounts by write cost in each slot:
+
+```c
+struct fd_pack_limits_usage {
+  ulong block_cost;
+  ulong vote_cost;
+  fd_pack_addr_use_t top_writers[ FD_PACK_TOP_WRITERS_CNT ];
+  ulong block_data_bytes;
+  ulong microblocks;
+};
+```
+
+Useful for monitoring and metrics.
+
+## Fee Model
+
+### Fee Per Signature
+
+```c
+#define FD_PACK_FEE_PER_SIGNATURE (5000UL)  /* In lamports */
+```
+
+### Fee Burn Percentage
+
+```c
+#define FD_PACK_TXN_FEE_BURN_PCT (50UL)
+```
+
+Half of transaction fees are burned, half go to the validator.
+
+## Resource Limits
+
+### Data Size Limit
+
+```c
+/* Each block limited to 32k parity shreds */
+#define FD_PACK_MAX_DATA_PER_BLOCK (FD_SHRED_BATCH_BLOCK_DATA_SZ_MAX)
+
+/* Optional larger limit for benchmarking */
+#define LARGER_MAX_DATA_PER_BLOCK (32UL*FD_SHRED_BATCH_BLOCK_DATA_SZ_MAX)
+```
+
+Pack limits data size to ensure the shred tile can process the block without exceeding shred limits.
+
+### Cost Limits
+
+```c
+/* Optional larger limit for benchmarking */
+#define LARGER_MAX_COST_PER_BLOCK (18UL*FD_PACK_MAX_COST_PER_BLOCK_LOWER_BOUND)
+```
+
+<Note>
+Pack doesn't know exactly how the block will be shredded (separation of concerns), so it uses conservative data size limits that guarantee the shred tile won't exceed shred counts.
+</Note>
+
+## Expiration Handling
+
+### Expiration Priority Queue
+
+```c
+struct fd_pack_expq {
+  ulong               expires_at;
+  fd_pack_ord_txn_t * txn;
+};
+```
+
+Transactions are tracked in an expiration priority queue:
+- Ordered by expiration time
+- Periodically checked for expired transactions
+- Expired transactions removed from all data structures
+
+### Invariants
+
+```c
+/* For pending transaction entries:
+   - expires_at == txn->expires_at
+   - txn->exp_prq_idx is the index of this structure */
+```
+
+The priority queue maintains back-pointers so transactions can be efficiently removed when scheduled or deleted.
+
+## Bank Tile Integration
+
+Pack can schedule to multiple bank tiles:
+
+```c
+#define FD_PACK_MAX_EXECLE_TILES 62UL
+```
+
+### Account Usage Bitmask
+
+```c
+ulong in_use_by;  /* Bitmask indicating which banks */
+```
+
+Each bit represents one bank tile:
+- Bit set: account in use by that bank
+- Allows parallel execution on different banks
+- Account can't be used by same bank until microblock completes
+
+## Performance Considerations
+
+### Memory Layout
+
+```c
+__attribute__((aligned(64)))  /* Cache line aligned */
+```
+
+Critical fields are cache-line aligned to avoid false sharing between CPU cores.
+
+### Non-Temporal Memcpy
+
+```c
+#define FD_PACK_USE_NON_TEMPORAL_MEMCPY 1
+```
+
+Uses non-temporal memory copies to avoid polluting CPU cache when copying transaction data.
+
+### Address Sanitizer Workaround
+
+```c
+#define SORT_FN_ATTR __attribute__((no_sanitize("address", "undefined")))
+```
+
+Sorting code has excessive ASan slowdown, so sanitizers are disabled for performance.
+
+## Smallest Transaction Tracking
+
+```c
+struct fd_pack_smallest {
+  ulong cus;    /* Smallest by compute units */
+  ulong bytes;  /* Smallest by bytes */
+};
+```
+
+Tracks the smallest transaction in each treap:
+- If remaining space < smallest transaction, skip entire treap
+- Avoids checking transactions that can't possibly fit
+- Conservative estimate maintained as transactions are deleted
+
+Both CU and byte limits matter, so track both dimensions.

@@ -1,0 +1,99 @@
+---
+title: fdctl monitor
+description: Monitor a running Firedancer validator's performance in real-time
+---
+
+Monitors a validator that is running locally on this machine. This is a low level performance monitor mostly useful for diagnosing throughput issues.
+
+## Usage
+
+```bash
+fdctl monitor --config <path>
+```
+
+## Arguments
+
+<ParamField path="--config" type="string" required>
+  Path to a configuration TOML file to run the monitor with. This must be the same configuration file the validator was started with.
+</ParamField>
+
+<Warning>
+  You must use the exact same configuration file that was used to start the validator. Using a different configuration file will result in incorrect or missing data.
+</Warning>
+
+## Behavior
+
+The monitor takes over the controlling terminal and refreshes it many times a second with up-to-date information. You can exit the monitor by sending `Ctrl+C` or `SIGINT`.
+
+## Example
+
+```bash
+fdctl monitor --config /home/firedancer/config.toml
+```
+
+Press `Ctrl+C` to exit the monitor.
+
+## What It Shows
+
+The monitor displays real-time performance metrics including:
+
+- Tile-level throughput and latency
+- Link utilization between tiles
+- Processing rates and bottlenecks
+- Memory usage and performance counters
+
+<Tip>
+  The monitor is particularly useful for identifying which tiles or links are becoming bottlenecks in the validator's processing pipeline.
+</Tip>
+
+## Required Capabilities
+
+The monitor command requires certain Linux capabilities to function properly:
+
+<AccordionGroup>
+  <Accordion title="CAP_SYS_ADMIN">
+    **Reason**: Call `unshare(2)` with `CLONE_NEWUSER` to sandbox the process in a user namespace
+    
+    Only required on kernels which restrict unprivileged user namespaces.
+  </Accordion>
+
+  <Accordion title="CAP_SETUID">
+    **Reason**: Call `setresuid(2)` to switch uid to the sandbox user
+    
+    Not required if the UID is already the same as the sandbox UID.
+  </Accordion>
+
+  <Accordion title="CAP_SETGID">
+    **Reason**: Call `setresgid(2)` to switch gid to the sandbox user
+    
+    Not required if the GID is already the same as the sandbox GID.
+  </Accordion>
+
+  <Accordion title="CAP_SYS_RESOURCE">
+    **Reason**: Call `rlimit(2)` to increase `RLIMIT_MEMLOCK` so all memory can be locked with `mlock(2)`
+    
+    Not required if the process already has a high enough limit.
+  </Accordion>
+</AccordionGroup>
+
+## Use Cases
+
+### Diagnosing Performance Issues
+
+Use the monitor to identify:
+- Which tiles are processing at capacity
+- Where data is queuing up in the pipeline
+- Link saturation and overflow conditions
+- Unusual latency spikes
+
+### Validating Configuration Changes
+
+After tuning your configuration, use the monitor to verify that:
+- Additional tiles are being utilized
+- Throughput has increased
+- Bottlenecks have been resolved
+
+## Related Commands
+
+- [fdctl run](/cli/run) - Start the validator
+- [fdctl metrics](/cli/other-commands#metrics) - View metrics without the interactive display

@@ -1,0 +1,413 @@
+---
+title: Flamenco
+description: Solana protocol implementation and runtime execution engine
+---
+
+Flamenco is Firedancer's implementation of the Solana protocol, providing transaction execution, account management, consensus logic, and validator operations. It serves as the runtime layer that processes Solana transactions and maintains blockchain state.
+
+## Overview
+
+Flamenco implements the complete Solana runtime environment, including:
+- Transaction execution and validation
+- Account state management
+- Program execution (eBPF VM)
+- Consensus and leader scheduling
+- Stake and reward calculations
+- Feature gate management
+
+<Note>
+Flamenco aims for complete compatibility with the Solana Labs validator while providing significant performance improvements through optimized data structures and parallel execution.
+</Note>
+
+## Core Components
+
+<Accordion title="Runtime Engine">
+
+### Runtime (`runtime/`)
+
+The core execution engine for Solana transactions:
+
+**Key structures:**
+```c
+struct fd_runtime;
+typedef struct fd_runtime fd_runtime_t;
+
+struct fd_exec_instr_ctx;  // Instruction execution context
+typedef struct fd_exec_instr_ctx fd_exec_instr_ctx_t;
+```
+
+**Responsibilities:**
+- Transaction execution orchestration
+- Cross-program invocation (CPI) handling
+- Compute unit metering
+- Account locking and conflict detection
+- Rent collection
+- Sysvar updates
+
+### Transaction Processing (`txn/`)
+
+```c
+struct fd_txn_in;   // Input transaction
+struct fd_txn_out;  // Execution result
+```
+
+**Processing pipeline:**
+1. Parse and validate transaction format
+2. Verify signatures (via Ballet Ed25519)
+3. Load and lock accounts
+4. Execute instructions sequentially
+5. Update account states
+6. Calculate fees and rent
+7. Unlock accounts and commit
+
+**Transaction limits:**
+- Max transaction size: 1232 bytes (`FD_TPU_MTU`)
+- Max signatures: Variable (typically 64)
+- Max accounts: 256 per transaction
+- Max instructions: 64 per transaction
+
+</Accordion>
+
+<Accordion title="Account Management">
+
+### Account Database (`accdb/`)
+
+High-performance account storage and retrieval:
+
+**Features:**
+- Concurrent read access
+- Write coalescing
+- Account versioning
+- Snapshot support
+- Cache hierarchy (L1/L2)
+
+### Account Metadata
+
+```c
+struct fd_account_meta {
+  uchar owner[32];      // Program that owns this account
+  ulong lamports;       // Account balance in lamports
+  ulong slot;           // Last modified slot
+  uint  dlen;           // Data length
+  uchar executable;     // Is this a program?
+  uchar padding[3];
+};
+
+// Get account data
+uchar * fd_account_data(fd_account_meta_t const * acc);
+```
+
+### Borrowed Accounts
+
+```c
+struct fd_borrowed_account;  // Transaction-scoped account reference
+```
+
+**Lifecycle:**
+- Borrowed at transaction start
+- Locked for write if writable
+- Modified during execution
+- Committed or rolled back at end
+
+### Account Manager (`fd_acc_mgr_t`)
+
+- Account lifecycle management
+- Memory pooling (`fd_acc_pool_t`)
+- Efficient allocation/deallocation
+
+</Accordion>
+
+<Accordion title="Virtual Machine">
+
+### eBPF VM (`vm/`)
+
+Solana's eBPF (extended Berkeley Packet Filter) virtual machine:
+
+**Capabilities:**
+- sBPF instruction set execution
+- JIT compilation (optional)
+- Compute unit metering
+- Memory safety checks
+- Call depth limiting
+
+**Program execution:**
+1. Load program from account
+2. Verify program (via Ballet sBPF)
+3. Compile to native code (JIT)
+4. Execute with instruction context
+5. Meter compute units
+6. Return result or error
+
+### Program Cache (`progcache/`)
+
+```c
+struct fd_progcache;
+```
+
+**Features:**
+- Compiled program caching
+- LRU eviction policy
+- Concurrent access
+- Invalidation on program upgrades
+
+**Cache strategy:**
+- Hot programs: JIT compiled, cached
+- Cold programs: Interpreted or compiled on-demand
+- Redeployment: Invalidate and recompile
+
+</Accordion>
+
+<Accordion title="Consensus & Leader Scheduling">
+
+### Leader Schedule (`leaders/`)
+
+Determines which validator is leader for each slot:
+
+**Algorithm:**
+1. Get stake distribution at epoch boundary
+2. Apply weighted sampling (Ballet wsample)
+3. Generate deterministic leader sequence
+4. Cache for current and next epoch
+
+**Key functions:**
+- Leader rotation every 4 slots (typically)
+- Epoch-based recalculation
+- Stake-weighted selection
+
+### Stake Management (`stakes/`)
+
+```c
+struct fd_vote_stakes;    // Voting stake distribution
+struct fd_stake_rewards;  // Reward calculations
+```
+
+**Stake tracking:**
+- Active stake per validator
+- Delegated stake
+- Activation/deactivation epochs
+- Warm-up/cool-down periods
+
+### Rewards (`rewards/`)
+
+**Reward types:**
+- Staking rewards (inflationary)
+- Transaction fees
+- Rent collection (deprecated)
+
+**Distribution:**
+- Calculated at epoch boundary
+- Distributed to stake accounts
+- Commission split to vote accounts
+
+</Accordion>
+
+<Accordion title="Gossip & Networking">
+
+### Gossip Protocol (`gossip/`)
+
+Distributed cluster information exchange:
+
+**Gossiped data:**
+- Cluster topology (validator IPs/ports)
+- Vote account information
+- Shred versions
+- Contact info updates
+- Node health metrics
+
+**Gossip messages:**
+- Push messages: Broadcast new information
+- Pull messages: Request missing data
+- Prune messages: Stop forwarding
+- Ping/pong: Liveness checks
+
+**Properties:**
+- Eventually consistent
+- Epidemic broadcast protocol
+- Fanout-based propagation
+- CRDT merge semantics
+
+</Accordion>
+
+<Accordion title="Features & Versioning">
+
+### Feature Gates (`features/`)
+
+```c
+union fd_features;
+typedef union fd_features fd_features_t;
+```
+
+Control activation of protocol changes:
+
+**Feature lifecycle:**
+1. Defined in code (pending)
+2. Activated by stake vote
+3. Effective at next epoch
+4. Remains active forever
+
+**Usage:**
+```c
+if (fd_features_test(features, FD_FEATURE_ID)) {
+  // New behavior
+} else {
+  // Legacy behavior
+}
+```
+
+**Common features:**
+- Transaction version support
+- Account rent changes
+- Compute unit pricing
+- New syscalls
+- VM improvements
+
+</Accordion>
+
+<Accordion title="Utility Components">
+
+### Genesis (`genesis/`)
+
+```c
+struct fd_genesis;
+```
+
+Genesis block configuration:
+- Initial account states
+- System program accounts
+- Stake pools
+- Inflation parameters
+- Epoch schedule
+
+### Capture (`capture/`)
+
+```c
+struct fd_capture_ctx;  // Capture replay data
+```
+
+**Features:**
+- Transaction replay capture
+- Account state snapshots
+- Deterministic debugging
+- Conformance testing
+
+### Log Collector (`log_collector/`)
+
+```c
+struct fd_log_collector;
+```
+
+Program log message collection:
+- Syscall log output
+- Error messages
+- Return to RPC clients
+
+### Types (`types/`)
+
+Solana protocol type definitions:
+- Serialization formats
+- Wire protocol structures
+- Custom type definitions (`fd_types_custom.h`)
+- Type casting utilities (`fd_cast.h`)
+
+</Accordion>
+
+## Address Utilities
+
+```c
+// Convert Solana address to base58 string
+char * fd_acct_addr_cstr(
+  char        cstr[FD_BASE58_ENCODED_32_SZ],
+  uchar const addr[32]
+);
+
+// Result: Base58-encoded address string (32-44 chars)
+```
+
+## Data Structures
+
+### Bank State
+
+```c
+struct fd_bank;        // Current bank (slot state)
+struct fd_banks;       // Multi-slot bank management
+struct fd_bank_data;   // Bank persistent data
+```
+
+**Banking stages:**
+- Bank 0: Current leader slot
+- Bank 1: Next slot preparation
+- Bank N: Historical banks for forks
+
+### Synchronization
+
+```c
+// fd_rwlock.h - Read-write lock for account access
+struct fd_banks_locks;  // Per-account locking
+```
+
+**Lock ordering:**
+1. Sort accounts by address
+2. Acquire locks in order
+3. Prevents deadlocks
+4. Enables parallel execution
+
+## Execution Flow
+
+```
+Transaction → Parse → Signature Check → Load Accounts
+     ↓
+Lock Accounts → Execute Instructions → Update State
+     ↓
+Calculate Fees → Commit or Rollback → Unlock
+```
+
+### Instruction Execution
+
+```c
+struct fd_exec_instr_ctx {
+  // Instruction being executed
+  // Account references
+  // Program ID
+  // Compute unit budget
+  // Instruction data
+};
+```
+
+**Execution:**
+1. Verify program ownership
+2. Check account permissions
+3. Execute program (native or eBPF)
+4. Meter compute units
+5. Update account data
+6. Handle cross-program invocations
+
+## Performance Features
+
+- **Parallel Execution**: Banking stages execute transactions concurrently
+- **Account Sharding**: Partition accounts for parallel access
+- **Program Caching**: JIT-compiled programs cached in memory
+- **Optimized Data Structures**: Custom allocators and pools
+- **SIMD Acceleration**: Vectorized operations where applicable
+
+## Compatibility
+
+Flamenco maintains compatibility with Solana Labs validator:
+- Identical transaction execution behavior
+- Same account state transitions
+- Compatible consensus rules
+- Matching feature gate activation
+- Equivalent RPC responses (via Agave integration)
+
+## Header Files
+
+```c
+#include "flamenco/fd_flamenco.h"      // Main header
+#include "flamenco/fd_flamenco_base.h" // Base types
+#include "flamenco/fd_rwlock.h"        // Locking primitives
+```
+
+## Related Components
+
+- [Ballet](/api/ballet) - Cryptographic primitives for signatures and hashing
+- [Disco](/api/disco) - Tile-based transaction processing pipeline
+- [Tango](/api/tango) - IPC for inter-stage communication

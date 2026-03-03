@@ -1,0 +1,95 @@
+---
+title: fdctl Command Overview
+description: Overview of the Firedancer fdctl command line interface and its subcommands
+---
+
+The Firedancer binary `fdctl` contains many subcommands which can be run from the command line to manage and operate a Solana validator.
+
+## Available Commands
+
+The fdctl CLI provides the following main command categories:
+
+### Core Operations
+
+<CardGroup cols={2}>
+  <Card title="run" icon="play" href="/cli/run">
+    Run the validator process
+  </Card>
+  <Card title="monitor" icon="chart-line" href="/cli/monitor">
+    Monitor a running validator's performance
+  </Card>
+</CardGroup>
+
+### Configuration & Setup
+
+<CardGroup cols={2}>
+  <Card title="configure" icon="gear" href="/cli/configure">
+    Configure the operating system for Firedancer
+  </Card>
+  <Card title="keys" icon="key" href="/cli/keys">
+    Manage validator identity keypairs
+  </Card>
+</CardGroup>
+
+### Utility Commands
+
+<CardGroup cols={2}>
+  <Card title="version" icon="code-branch" href="/cli/other-commands#version">
+    Display the current validator version
+  </Card>
+  <Card title="shred-version" icon="network-wired" href="/cli/other-commands#shred-version">
+    Display the cluster shred version
+  </Card>
+  <Card title="metrics" icon="gauge" href="/cli/other-commands#metrics">
+    Print validator metrics to stdout
+  </Card>
+  <Card title="set-identity" icon="id-card" href="/cli/other-commands#set-identity">
+    Change the identity key of a running validator
+  </Card>
+  <Card title="mem" icon="memory" href="/cli/other-commands#mem">
+    Display memory requirements and tile layout
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+Most fdctl commands follow these common patterns:
+
+### Configuration File
+
+Many commands accept a `--config` argument to specify the path to a TOML configuration file:
+
+```bash
+fdctl run --config /path/to/config.toml
+fdctl monitor --config /path/to/config.toml
+fdctl configure init --config /path/to/config.toml
+```
+
+<Warning>
+  When using commands like `monitor` or `set-identity`, you must use the same configuration file that the validator was started with.
+</Warning>
+
+### Output Streams
+
+- **stdout**: Used for primary command output (results, metrics, versions)
+- **stderr**: Used for diagnostic messages and logs
+
+### Capabilities and Permissions
+
+Many fdctl commands require elevated privileges or specific Linux capabilities. Common requirements include:
+
+- **root or sudo**: For system configuration changes
+- **CAP_SYS_ADMIN**: For namespace operations and kernel parameter changes
+- **CAP_NET_RAW**: For raw socket operations (XDP)
+- **CAP_SETUID/CAP_SETGID**: For switching to sandbox user
+- **CAP_SYS_RESOURCE**: For memory locking and resource limits
+
+Refer to individual command documentation for specific capability requirements.
+
+## Getting Help
+
+For detailed information about each command, see the individual command documentation pages or run:
+
+```bash
+fdctl <command> --help
+```

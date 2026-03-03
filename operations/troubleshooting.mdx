@@ -1,0 +1,381 @@
+---
+title: Troubleshooting
+description: Common issues and solutions when building and running Firedancer
+---
+
+This page covers common troubleshooting steps when encountering errors while building and running Firedancer. If these don't resolve your issue, seek help in the `#firedancer-operators` channel on the Solana Tech Discord or file an issue on GitHub.
+
+## Building Issues
+
+### General Recommendations
+
+<Steps>
+  <Step title="Clean build from scratch">
+    Do a fresh clone of the repository following the Getting Started guide. Verify you're using a supported compiler.
+    
+    ```bash
+    git clone --recurse-submodules https://github.com/firedancer-io/firedancer.git
+    cd firedancer
+    git checkout __FD_LATEST_VERSION__
+    ```
+  </Step>
+  
+  <Step title="Install dependencies">
+    Always run the dependency script after cloning:
+    
+    ```bash
+    ./deps.sh
+    ```
+  </Step>
+  
+  <Step title="Update existing repositories correctly">
+    If updating an existing clone, update the solana submodule after pulling:
+    
+    ```bash
+    git fetch
+    git checkout __FD_LATEST_VERSION__
+    git submodule update
+    ```
+  </Step>
+</Steps>
+
+### Missing cargo Binary
+
+**Error:**
+```
+error: the 'cargo' binary, normally provided by the 'cargo' component, 
+is not applicable to the '1.75.0-x86_64-unknown-linux-gnu' toolchain
++ exec cargo +1.75.0 build --profile=release-with-debug --lib -p agave-validator
+make: *** [src/app/fdctl/Local.mk:107: cargo-validator] Error 1
+```
+
+**Solution:**
+
+This typically happens due to a race condition during Rust toolchain installation. Reinstall the toolchain (replace `1.75.0` with your version):
+
+```bash
+rustup toolchain uninstall 1.75.0-x86_64-unknown-linux-gnu
+rustup toolchain install 1.75.0-x86_64-unknown-linux-gnu
+```
+
+### Out of Memory During Build
+
+**Symptom:** Build fails with various errors when compiling Agave components.
+
+**Solution:**
+
+You need around 32GiB of available memory to build Firedancer. If you run out of memory, make can return various errors. Consider:
+
+- Closing other applications
+- Reducing parallel jobs: `make -j4 fdctl solana` (instead of `-j`)
+- Adding swap space temporarily
+- Building on a machine with more RAM
+
+### Compiler Version Issues
+
+**Solution:**
+
+Firedancer requires GCC 8.5 or higher. Only GCC versions 11, 12, and 13 are officially supported and tested.
+
+Check your GCC version:
+```bash
+gcc --version
+```
+
+If your version is unsupported, install a supported version through your package manager.
+
+## Configuration Issues
+
+### General Recommendations
+
+<Accordion title="Reset configuration completely">
+  If `fdctl configure init all` fails, try removing all existing configuration first:
+  
+  ```bash
+  sudo fdctl configure fini all --config ~/config.toml
+  sudo fdctl configure init all --config ~/config.toml
+  ```
+  
+  You can also re-run a specific stage:
+  ```bash
+  sudo fdctl configure init hugetlbfs --config ~/config.toml
+  ```
+</Accordion>
+
+<Accordion title="Verify config file consistency">
+  Ensure the same `config.toml` is used for all commands:
+  
+  ```bash
+  # Check configuration
+  fdctl configure check all --config ~/config.toml
+  
+  # Initialize with SAME file
+  sudo fdctl configure init all --config ~/config.toml
+  
+  # Run with SAME file
+  sudo fdctl run --config ~/config.toml
+  ```
+</Accordion>
+
+<Accordion title="Validate TOML syntax">
+  Ensure your configuration file is valid TOML. Common issues:
+  
+  - Missing quotes around strings
+  - Incorrect array syntax
+  - Duplicate keys
+  - Invalid section headers
+  
+  You can validate TOML syntax using online validators or command-line tools.
+</Accordion>
+
+<Accordion title="Read error messages carefully">
+  `fdctl` often prints helpful suggestions in error messages. Look for:
+  
+  - Specific capability requirements
+  - Permission issues
+  - Missing system resources
+  - Configuration conflicts
+</Accordion>
+
+### Hugetlbfs Allocation Failures
+
+**Error:** Cannot allocate huge pages
+
+**Solutions:**
+
+<Warning>
+  Run hugetlbfs configuration immediately after system boot. Memory fragmentation later prevents allocating large contiguous blocks.
+</Warning>
+
+- Reboot and run `fdctl configure init hugetlbfs` before other applications start
+- Check available memory: `cat /proc/meminfo | grep Huge`
+- Verify no other applications are holding huge pages
+
+### Network Device Configuration Errors
+
+**Error:** ethtool commands fail
+
+**Solutions:**
+
+- Verify the network interface name in your config matches the actual interface:
+  ```bash
+  ip link show
+  ```
+
+- Check if the interface supports required features:
+  ```bash
+  ethtool -k <interface>
+  ```
+
+- Ensure you're running with root privileges (not just capabilities)
+
+### Sysctl Parameter Conflicts
+
+**Error:** Cannot set sysctl values
+
+**Solutions:**
+
+- Check current values:
+  ```bash
+  sysctl -a | grep <parameter>
+  ```
+
+- Verify you have `CAP_SYS_ADMIN` or root privileges
+
+- Check for conflicting sysctl configurations in `/etc/sysctl.conf` or `/etc/sysctl.d/`
+
+## Runtime Issues
+
+### General Recommendations
+
+<Note>
+  Ensure the same `config.toml` is used for both `configure` and `run` commands.
+</Note>
+
+### Validator Fails to Start
+
+**Checklist:**
+
+<Steps>
+  <Step title="Verify configuration">
+    ```bash
+    fdctl configure check all --config ~/config.toml
+    ```
+    
+    All stages should pass. If not, run init:
+    ```bash
+    sudo fdctl configure init all --config ~/config.toml
+    ```
+  </Step>
+  
+  <Step title="Check permissions">
+    - Verify you're running as root: `whoami`
+    - Verify the user in config.toml exists: `id <username>`
+    - Ensure the user has access to keypair files
+  </Step>
+  
+  <Step title="Verify keypairs exist">
+    ```bash
+    ls -l /path/to/validator-keypair.json
+    ls -l /path/to/vote-keypair.json
+    ```
+  </Step>
+  
+  <Step title="Check ledger directory">
+    Ensure the ledger directory is accessible and has sufficient space:
+    ```bash
+    df -h /path/to/ledger
+    ```
+  </Step>
+</Steps>
+
+### XDP/AF_XDP Errors
+
+**Error:** Cannot attach XDP program
+
+**Solutions:**
+
+- Verify kernel version (minimum 4.18 required):
+  ```bash
+  uname -r
+  ```
+
+- Check if another XDP program is attached:
+  ```bash
+  ip link show <interface>
+  ```
+  Look for "xdp" in the output.
+
+- Verify network driver supports XDP:
+  ```bash
+  ethtool -i <interface>
+  ```
+  
+  Well-tested drivers: `ixgbe`, `i40e`, `ice`
+
+### Network Connectivity Issues
+
+**Symptom:** Validator cannot connect to cluster
+
+**Solutions:**
+
+- Verify gossip entrypoints are correct for your cluster
+- Check firewall rules allow required ports
+- Ensure network interface is up:
+  ```bash
+  ip link show <interface>
+  ```
+
+- Test basic connectivity:
+  ```bash
+  ping -c 3 entrypoint.testnet.solana.com
+  ```
+
+### Tile Crashes or Hangs
+
+**Symptom:** One or more tiles stop responding
+
+**Solutions:**
+
+- Check if hyperthreaded pairs are conflicting (see initialization guide)
+- Verify CPU affinity settings don't overlap
+- Monitor system resources:
+  ```bash
+  htop
+  ```
+
+- Check for out-of-memory conditions:
+  ```bash
+  dmesg | grep -i "out of memory"
+  ```
+
+### RPC Not Responding
+
+**Symptom:** Cannot connect to RPC endpoint
+
+**Solutions:**
+
+- Verify RPC is enabled in config:
+  ```toml
+  [rpc]
+      port = 8899
+      full_api = true
+  ```
+
+- Check if port is listening:
+  ```bash
+  netstat -tlnp | grep 8899
+  ```
+
+- Verify firewall allows connections to RPC port
+
+- Test RPC endpoint:
+  ```bash
+  curl -X POST -H "Content-Type: application/json" -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getHealth"
+  }' http://localhost:8899
+  ```
+
+## Performance Issues
+
+### High CPU Usage on Non-Tile Processes
+
+**Symptom:** `ksoftirqd` or other kernel processes consuming CPU
+
+**Solutions:**
+
+- Verify IRQ affinity configuration
+- Check if network interrupts are properly configured
+- Ensure tiles are pinned to correct CPU cores
+
+### Poor Network Performance
+
+**Solutions:**
+
+- Verify ethtool configuration is correct:
+  ```bash
+  ethtool -k <interface> | grep xdp
+  ```
+
+- Check network device statistics:
+  ```bash
+  ethtool -S <interface>
+  ```
+
+- Ensure sufficient network queues for net tiles
+- Consider using dedicated mode for ethtool-channels
+
+### Slow Block Processing
+
+**Solutions:**
+
+- Increase tile counts in configuration if CPU cores are available
+- Monitor tile backpressure with `fdctl monitor`
+- Verify disk I/O is not bottlenecked:
+  ```bash
+  iostat -x 1
+  ```
+
+## Getting Help
+
+If these troubleshooting steps don't resolve your issue:
+
+1. **Gather diagnostic information:**
+   - Firedancer version: `git describe --tags`
+   - Kernel version: `uname -r`
+   - GCC version: `gcc --version`
+   - Network driver: `ethtool -i <interface>`
+   - Error messages and logs
+
+2. **Check existing issues:**
+   - GitHub: https://github.com/firedancer-io/firedancer/issues
+
+3. **Ask for help:**
+   - Solana Tech Discord: `#firedancer-operators` channel
+   - File a GitHub issue with diagnostic information
+
+<Note>
+  When reporting issues, include your configuration file (with sensitive data like keypairs removed) and relevant error messages.
+</Note>

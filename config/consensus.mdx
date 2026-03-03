@@ -1,0 +1,150 @@
+---
+title: Consensus Configuration
+description: Configure validator identity, voting accounts, and consensus parameters
+---
+
+The `[consensus]` section configures your validator's identity, voting behavior, and participation in the Solana consensus protocol.
+
+## Identity and Voting
+
+<ParamField path="consensus.identity_path" type="string" default="">
+  Absolute path to a `keypair.json` file containing the identity of the validator. When connecting to dev, test, or mainnet it is required to provide an identity file.
+  
+  Supports `{user}` and `{name}` substitutions. If no path is provided, it defaults to inside the scratch directory, under path `identity.json`.
+  
+  This option is passed to the Agave client with the `--identity` argument.
+</ParamField>
+
+<ParamField path="consensus.vote_account_path" type="string" default="">
+  Absolute path to a `keypair.json` containing the voting account of the validator. You can alternatively provide the base58 encoded pubkey of the vote account to use with this validator. If no voting account is provided, voting will be disabled.
+  
+  Supports `{user}` and `{name}` substitutions. The authorized voter for the vote account must be either the identity keypair or one of the authorized-voter keypairs.
+  
+  This option is passed to the Agave client with the `--vote-account` argument.
+</ParamField>
+
+<ParamField path="consensus.authorized_voter_paths" type="array" default="[]">
+  List of absolute paths to authorized-voter keypairs for the vote account. This is not needed if no vote account is specified. If a vote account is specified and this is empty, the identity account will be used as the authorized-voter account.
+  
+  These options are passed to the Agave client with the `--authorized-voter` argument.
+</ParamField>
+
+## Genesis and Bootstrap
+
+<ParamField path="consensus.snapshot_fetch" type="boolean" default="true">
+  If false, do not attempt to fetch a snapshot from the cluster, instead start from a local snapshot if one is present. A snapshot is required to run the validator, so either one must be present, or you need to fetch it.
+  
+  This option is passed (inverted) to the Agave client with the `--no-snapshot-fetch` argument.
+</ParamField>
+
+<ParamField path="consensus.genesis_fetch" type="boolean" default="true">
+  If false, do not attempt to fetch the genesis from the cluster.
+  
+  This option is passed (inverted) to the Agave client with the `--no-genesis-fetch` argument.
+</ParamField>
+
+<ParamField path="consensus.expected_genesis_hash" type="string" default="">
+  If set, require the genesis block to have the given hash. If it does not, the validator will abort with an error.
+  
+  This option is passed to the Agave client with the `--expected-genesis-hash` argument.
+</ParamField>
+
+## Known Validators
+
+<ParamField path="consensus.known_validators" type="array" default="[]">
+  A set of validators we trust to publish snapshots. If a snapshot is not published by a validator with one of these keys, it is ignored. If no known validators are specified, any hash will be accepted.
+  
+  These options are passed to the Agave client with the `--known-validator` argument.
+</ParamField>
+
+<CodeGroup>
+```toml Testnet Example
+[consensus]
+    expected_genesis_hash = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+    known_validators = [
+        "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
+        "dDzy5SR3AXdYWVqbDEkVFdvSPCtS9ihF5kJkHCtXoFs",
+        "Ft5fbkqNa76vnsjYNwjDZUXoTWpP7VYm3mtsaQckQADN",
+        "eoKpUABi59aT4rR9HGS3LcMecfut9x7zJyodWWP43YQ",
+        "9QxCLckBiJc783jnMvXZubK4wH86Eqqvashtrwvcsgkv",
+    ]
+```
+</CodeGroup>
+
+## Startup Tests
+
+<ParamField path="consensus.poh_speed_test" type="boolean" default="true">
+  On startup, do some simulations to see how fast the validator can generate proof of history. If it is too slow to keep up with the network, exit out during boot. It is recommended to leave this on to ensure you can keep up with the network.
+  
+  This option is passed to the Agave client (inverted) with the `--no-poh-speed-test` argument.
+</ParamField>
+
+<ParamField path="consensus.os_network_limits_test" type="boolean" default="true">
+  Perform a network speed test on starting up the validator. If this is not disabled, and the speed test fails, the validator will refuse to start.
+  
+  This option is passed to the Agave client (inverted) with the `--no-os-network-limits-test` argument.
+</ParamField>
+
+## Advanced Options
+
+<ParamField path="consensus.wait_for_supermajority_at_slot" type="integer" default="0">
+  If nonzero, after processing the ledger, and the next slot is the provided value, wait until a supermajority of stake is visible on gossip before starting proof of history.
+  
+  This option is passed to the Agave client with the `--wait-for-supermajority` argument.
+</ParamField>
+
+<ParamField path="consensus.expected_bank_hash" type="string" default="">
+  If there is a hard fork, it might be required to provide an expected bank hash to ensure the correct fork is being selected. If this is not provided, or we are not waiting for a supermajority, the bank hash is not checked.
+  
+  This option is passed to the Agave client with the `--expected-bank-hash` argument.
+</ParamField>
+
+<ParamField path="consensus.expected_shred_version" type="integer" default="0">
+  The shred version is a small hash of the genesis block and any subsequent hard forks. If nonzero, ignore any shreds that have a different shred version than this value. If zero, the expected shred version is automatically determined by copying the shred version that the entrypoint validator is using.
+  
+  This option is passed to the Agave client with the `--expected-shred-version` argument.
+</ParamField>
+
+<ParamField path="consensus.wait_for_vote_to_start_leader" type="boolean" default="true">
+  If the validator starts up with no ledger, it will wait to start block production until it sees a vote land in a rooted slot. This prevents double signing. Turn off to risk double signing a block.
+  
+  This option is passed to the Agave client (inverted) with the `--no-wait-for-vote-to-start-leader` argument.
+</ParamField>
+
+<ParamField path="consensus.hard_fork_at_slots" type="array" default="[]">
+  If nonempty, add a hard fork at each of the provided slots.
+  
+  These options are passed to the Agave client with the `--hard-fork` argument.
+</ParamField>
+
+## Configuration Example
+
+<CodeGroup>
+```toml Full Example
+[consensus]
+    # Identity and voting
+    identity_path = "/home/firedancer/validator-keypair.json"
+    vote_account_path = "/home/firedancer/vote-keypair.json"
+    
+    # Genesis validation
+    expected_genesis_hash = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+    
+    # Known validators for snapshot trust
+    known_validators = [
+        "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
+        "dDzy5SR3AXdYWVqbDEkVFdvSPCtS9ihF5kJkHCtXoFs",
+    ]
+    
+    # Startup tests
+    poh_speed_test = true
+    os_network_limits_test = true
+    
+    # Bootstrap behavior
+    snapshot_fetch = true
+    genesis_fetch = true
+```
+</CodeGroup>
+
+<Note>
+For production validators, always set `expected_genesis_hash` and configure `known_validators` to ensure your validator joins the correct network and trusts only verified snapshots.
+</Note>

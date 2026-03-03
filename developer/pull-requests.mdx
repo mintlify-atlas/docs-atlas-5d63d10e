@@ -1,0 +1,282 @@
+---
+title: Pull Request Process
+description: Guidelines for submitting pull requests to Firedancer
+---
+
+## Overview
+
+This guide outlines the process for contributing code changes to Firedancer through pull requests. Following these guidelines helps maintain code quality and ensures your contributions can be reviewed efficiently.
+
+## Before You Start
+
+<Info>
+  Make sure you understand the Firedancer code style guide before submitting a pull request. See the [Contributing Guide](/developer/contributing) for details.
+</Info>
+
+### Development Environment Setup
+
+Ensure your development environment is properly configured:
+
+<Steps>
+  <Step title="System requirements">
+    - Linux OS (kernel v4.18 or newer)
+    - Git with submodule support
+    - Development dependencies installed via `./deps.sh +dev`
+  </Step>
+  
+  <Step title="Fork and clone">
+    ```bash
+    git clone --recurse-submodules https://github.com/YOUR-USERNAME/firedancer.git
+    cd firedancer
+    ```
+  </Step>
+  
+  <Step title="Build and test">
+    ```bash
+    make -j
+    make -j run
+    ```
+    Verify that the build completes successfully and tests pass.
+  </Step>
+</Steps>
+
+## Pull Request Guidelines
+
+### Code Quality Standards
+
+Before submitting your pull request, ensure your code meets these standards:
+
+#### Code Style Compliance
+
+- Follow the Firedancer code style guide (defined by `src/tango`)
+- Use vertical alignment for improved readability
+- Apply proper spacing rules for function calls and control flow
+- Use `fd_util_base.h` types instead of `stdint.h` types
+- Document all public API functions
+
+#### Testing Requirements
+
+<Warning>
+  All new code should be covered by appropriate tests, including fuzz tests where applicable.
+</Warning>
+
+- Add unit tests for new functionality
+- Include fuzz tests for security-critical code
+- Ensure all existing tests continue to pass
+- Add test vectors if contributing to consensus-critical code
+
+#### Documentation
+
+- Document public API functions with proper comment blocks
+- Update relevant documentation files if changing behavior
+- Include comments explaining complex logic or non-obvious decisions
+
+### Submitting Your Pull Request
+
+<Steps>
+  <Step title="Create a feature branch">
+    ```bash
+    git checkout -b feature/your-feature-name
+    ```
+    Use descriptive branch names that indicate the purpose of your changes.
+  </Step>
+  
+  <Step title="Make your changes">
+    - Write clean, well-documented code
+    - Follow the code style guidelines
+    - Keep commits atomic and focused
+  </Step>
+  
+  <Step title="Test thoroughly">
+    ```bash
+    make -j test
+    ```
+    Ensure all tests pass before submitting.
+  </Step>
+  
+  <Step title="Commit your changes">
+    Write clear, descriptive commit messages:
+    ```bash
+    git add .
+    git commit -m "Add feature: brief description"
+    ```
+  </Step>
+  
+  <Step title="Push to your fork">
+    ```bash
+    git push origin feature/your-feature-name
+    ```
+  </Step>
+  
+  <Step title="Open a pull request">
+    Navigate to the Firedancer repository on GitHub and open a pull request from your branch.
+  </Step>
+</Steps>
+
+### Pull Request Description
+
+Your pull request description should include:
+
+- **Summary**: Brief overview of what the PR accomplishes
+- **Motivation**: Why this change is needed
+- **Changes**: Detailed description of the changes made
+- **Testing**: How you tested the changes
+- **Related Issues**: Link to any related GitHub issues
+
+**Example:**
+```markdown
+## Summary
+Optimizes the packet processing pipeline to reduce latency.
+
+## Motivation
+Current packet processing has unnecessary allocations that impact performance
+during high-throughput scenarios.
+
+## Changes
+- Refactored packet buffer allocation to use pre-allocated pools
+- Reduced memory copies in the hot path
+- Added benchmarks for packet processing
+
+## Testing
+- All existing tests pass
+- Added new benchmark showing 15% latency improvement
+- Tested on testnet for 48 hours with no issues
+
+## Related Issues
+Closes #1234
+```
+
+## Code Review Process
+
+### What to Expect
+
+<Info>
+  The Firedancer team reviews all pull requests. Response times may vary based on complexity and team availability.
+</Info>
+
+During review, maintainers may:
+- Request changes to meet code style guidelines
+- Ask for additional tests or documentation
+- Suggest alternative approaches
+- Request clarification on design decisions
+
+### Responding to Feedback
+
+<Steps>
+  <Step title="Address comments">
+    Review all feedback carefully and make requested changes.
+  </Step>
+  
+  <Step title="Update your branch">
+    ```bash
+    git add .
+    git commit -m "Address review feedback"
+    git push origin feature/your-feature-name
+    ```
+  </Step>
+  
+  <Step title="Respond to reviewers">
+    Reply to comments explaining your changes or asking for clarification if needed.
+  </Step>
+</Steps>
+
+## Special Considerations
+
+### Security-Sensitive Changes
+
+<Warning>
+  Security-sensitive changes require extra scrutiny and may take longer to review.
+</Warning>
+
+If your PR involves:
+- Cryptographic operations
+- Consensus-critical code
+- Network protocol changes
+- Sandbox/security mechanisms
+
+Expect:
+- More detailed code review
+- Requests for additional testing
+- Possible security audit requirements
+
+### Performance-Critical Changes
+
+For changes affecting performance:
+- Include benchmark results
+- Document performance impact
+- Test under realistic workloads
+- Consider impact on different hardware configurations
+
+### Breaking Changes
+
+<Warning>
+  Breaking changes require special consideration and coordination with the team.
+</Warning>
+
+If your PR introduces breaking changes:
+- Clearly mark it as breaking in the PR title
+- Document migration path for users
+- Discuss with maintainers before implementation
+- Ensure compatibility considerations are addressed
+
+## Test Vectors
+
+For consensus-critical changes, you may need to add test vectors:
+
+<Steps>
+  <Step title="Generate fixtures">
+    Create test fixtures using [solana-conformance](https://github.com/firedancer-io/solana-conformance).
+  </Step>
+  
+  <Step title="Submit to test-vectors">
+    Make a pull request to the [test-vectors repository](https://github.com/firedancer-io/test-vectors) with your new fixtures.
+  </Step>
+  
+  <Step title="Update Firedancer">
+    Once merged, update `contrib/test/test-vectors-fixtures/test-vectors-commit-sha.txt` in your Firedancer PR with the new commit SHA.
+  </Step>
+</Steps>
+
+## Common Issues
+
+### Build Failures
+
+If your PR fails to build:
+- Ensure you're using a supported compiler (GCC 8.5+, Clang)
+- Verify all dependencies are installed
+- Check for platform-specific issues
+- Test on a clean clone of the repository
+
+### Test Failures
+
+If tests fail:
+- Run tests locally to reproduce the issue
+- Check if failures are related to your changes
+- Ensure you haven't introduced race conditions
+- Verify seccomp compatibility if adding syscalls
+
+### Code Style Issues
+
+If your code doesn't match the style:
+- Review the [Contributing Guide](/developer/contributing)
+- Look at existing code in `src/tango` for examples
+- Pay special attention to vertical alignment
+- Check spacing rules for functions and control flow
+
+## After Merge
+
+Once your pull request is merged:
+- Your changes will be included in the next release
+- You'll be credited as a contributor
+- Your code will be tested in CI and on testnets
+
+<Info>
+  Thank you for contributing to Firedancer! Your contributions help make Solana more resilient and performant.
+</Info>
+
+## Resources
+
+- [Contributing Guide](/developer/contributing)
+- [Security Policy](/developer/security)
+- [Firedancer GitHub Repository](https://github.com/firedancer-io/firedancer)
+- [Test Vectors Repository](https://github.com/firedancer-io/test-vectors)

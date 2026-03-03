@@ -1,0 +1,418 @@
+---
+title: AF_XDP Networking Internals
+description: Deep dive into AF_XDP kernel-bypass networking implementation in Firedancer
+---
+
+AF_XDP (Address Family XDP) is a Linux kernel-bypass networking technology that Firedancer uses for high-performance packet processing. This page details the low-level implementation.
+
+## What is AF_XDP?
+
+AF_XDP is a Linux API providing kernel-bypass networking through shared memory ring buffers accessible from userspace.
+
+**Key characteristics:**
+- Redirects packets from/to shared memory buffers
+- Hardware-agnostic (unlike DPDK)
+- Can share NIC with Linux networking stack
+- Allows deployment in existing, heterogeneous networks
+- Shared memory region called "UMEM"
+
+### XDP (eXpress Data Path)
+
+XDP is a framework for installing hooks (eBPF programs) at an early stage of packet processing:
+- Runs before tc and netfilter
+- eBPF is JIT-compiled bytecode
+- Some hardware/driver combinations offload eBPF to NICs
+- Not to be confused with Solana BPF (sBPF)
+
+## Packet Flow Architecture
+
+### RX Block Diagram
+
+```
+   ┌─────┐  ┌────────┐  ┌─────┐ XDP_PASS ┌─────────┐
+   │ NIC ├──> Driver ├──> XDP ├──────────> sk_buff │
+   └─────┘  └────────┘  └─┬───┘          └─────────┘
+                          │
+                          │ XDP_REDIRECT
+                          │
+                       ┌──▼───────┐      ┌─────────┐
+                       │ XSK/UMEM ├──────> fd_aio  │
+                       └──────────┘      └─────────┘
+```
+
+In `XDP_FLAGS_DRV_MODE` mode:
+1. **NIC** receives packet via hardware
+2. **Driver** passes packet to XDP facility
+3. **XDP** eBPF program inspects packet:
+   - `XDP_PASS`: Continue to Linux stack (sk_buff, ip_rcv, tc, netfilter)
+   - `XDP_REDIRECT`: Copy to XSK UMEM, allocate RX queue entry
+4. **fd_aio** backend provides async I/O interface
+
+<Info>
+The `XDP_FLAGS_SKB_MODE` fallback uses sk_buff-based memory management (still skips most of the generic path) but is more widely available.
+</Info>
+
+### TX Block Diagram
+
+```
+   ┌────────┐  ┌──────────┐  ┌────────┐  ┌─────┐
+   │ fd_aio ├──> XSK/UMEM ├──> Driver ├──> NIC │
+   └────────┘  └──────────┘  └────────┘  └─────┘
+```
+
+1. **fd_aio**: Userspace delivers packets to XSK/UMEM buffers
+2. **Kernel**: Forwards packets to NIC driver
+3. **Driver**: NIC transmits packets
+
+<Note>
+The application is responsible for maintaining a routing table to resolve layer-3 destination addresses to NICs and layer-2 addresses. Netfilter (iptables, nftables) is not available in the XDP path.
+</Note>
+
+## Memory Management
+
+### UMEM Overview
+
+The UMEM (Universal Memory) area:
+- Allocated from userspace (recommended: huge pages via fd_util shmem/wksp APIs)
+- Divided into equally sized frames
+- Each frame owned by either userspace or kernel at any time
+- All frames initially owned by userspace
+
+```c
+/* FD_XSK_UMEM_ALIGN: byte alignment requirement (Linux 4.18+) */
+#define FD_XSK_UMEM_ALIGN (4096UL)
+```
+
+### Ring Buffers
+
+Ownership changes and packet events are transmitted via four rings allocated by the kernel (mmap'd to userspace):
+
+```
+Data flow:
+(U->K) = userspace-to-kernel
+(K->U) = kernel-to-userspace
+
+FILL (U->K):        Free frames provided to kernel
+                    Kernel may populate with RX packet data
+
+RX (K->U):          Kernel passes filled frames back to userspace
+
+TX (U->K):          TX frames sent by userspace to kernel
+
+COMPLETION (K->U):  Kernel returns processed TX frames to userspace
+```
+
+The FILL-RX and TX-COMPLETION pairs form two independent cycles. The kernel never moves frames between pairs.
+
+## XDP Ring Structure
+
+### Ring Descriptor
+
+```c
+struct __attribute__((aligned(64UL))) fd_xdp_ring {
+  /* mmap() params for munmap() during leave */
+  void *  mem;      /* Start of shared descriptor ring mmap region */
+  ulong   map_sz;   /* Size of shared descriptor ring mmap region */
+  
+  /* Pointers to opaque XSK ring structure
+     (layout is unstable, queried via getsockopt(SOL_XDP, XDP_MMAP_OFFSETS)) */
+  union {
+    void *            ptr;          /* Opaque pointer */
+    struct xdp_desc * packet_ring;  /* For RX, TX rings */
+    ulong *           frame_ring;   /* For FILL, COMPLETION rings */
+  };
+  uint *  flags;       /* Points to flags in shared descriptor ring */
+  uint *  prod;        /* Points to producer seq in shared ring */
+  uint *  cons;        /* Points to consumer seq in shared ring */
+  
+  /* Managed by fd_xsk_t */
+  uint    depth;       /* Capacity of ring in number of entries */
+  uint    cached_prod; /* Cached value of *prod */
+  uint    cached_cons; /* Cached value of *cons */
+};
+```
+
+<Info>
+The kernel-provided descriptor ring memory layout is unstable. Field offsets must be queried using `getsockopt(SOL_XDP, XDP_MMAP_OFFSETS)` on each join.
+</Info>
+
+### Ring Operations
+
+Rings are synchronized via incrementing sequence numbers that wrap at 2^64.
+
+<CodeGroup>
+```c Ring Empty Check
+#define FD_XDP_RING_ROLE_PROD 0
+#define FD_XDP_RING_ROLE_CONS 1
+
+static inline int
+fd_xdp_ring_empty( fd_xdp_ring_t * ring, uint role ) {
+  if( role == FD_XDP_RING_ROLE_PROD ) {
+    /* Userspace is producer (fill, tx) */
+    if( FD_UNLIKELY( ring->cached_prod == ring->cached_cons ) ) 
+      return 1;
+    ring->cached_cons = FD_VOLATILE_CONST( *ring->cons );
+  } else {
+    /* Userspace is consumer (rx, completion) */
+    if( FD_LIKELY( ring->cached_cons < ring->cached_prod ) ) 
+      return 0;
+    ring->cached_prod = FD_VOLATILE_CONST( *ring->prod );
+  }
+  return ring->cached_prod == ring->cached_cons;
+}
+```
+
+```c Ring Full Check
+static inline int
+fd_xdp_ring_full( fd_xdp_ring_t * ring ) {
+  /* Assumes caller is producer (fill, tx) */
+  if( FD_LIKELY( ring->cached_prod - ring->cached_cons < ring->depth ) ) 
+    return 0;
+  ring->cached_cons = FD_VOLATILE_CONST( *ring->cons );
+  return ring->cached_prod - ring->cached_cons >= ring->depth;
+}
+```
+</CodeGroup>
+
+**Optimization:**
+- Caches producer/consumer sequence numbers
+- Only refreshes from shared memory when potentially empty/full
+- Reduces expensive memory fence operations
+
+## XSK Socket Structure
+
+```c
+struct fd_xsk {
+  /* Informational */
+  uint if_idx;                    /* Net device index */
+  uint if_queue_id;               /* Net device combined queue index */
+  long log_suppress_until_ns;     /* Suppress log messages until time */
+
+  /* Kernel descriptor of XSK rings
+     from getsockopt(SOL_XDP, XDP_MMAP_OFFSETS) */
+  struct xdp_mmap_offsets offsets;
+
+  /* AF_XDP socket file descriptor */
+  int xsk_fd;
+
+  /* XSK ring descriptors */
+  fd_xdp_ring_t ring_rx;   /* Receive ring */
+  fd_xdp_ring_t ring_tx;   /* Transmit ring */
+  fd_xdp_ring_t ring_fr;   /* Fill ring */
+  fd_xdp_ring_t ring_cr;   /* Completion ring */
+};
+```
+
+## XSK Parameters
+
+```c
+struct fd_xsk_params {
+  /* Ring depths */
+  ulong fr_depth;  /* Fill ring depth */
+  ulong rx_depth;  /* RX ring depth */
+  ulong tx_depth;  /* TX ring depth */
+  ulong cr_depth;  /* Completion ring depth */
+
+  /* UMEM configuration */
+  void * umem_addr;  /* Pointer to UMEM in local address space */
+  ulong frame_sz;    /* Frame size in UMEM ring buffers */
+  ulong umem_sz;     /* Total UMEM size (contiguous, aligned) */
+
+  /* Network interface */
+  uint if_idx;       /* Linux interface index */
+  uint if_queue_id;  /* Interface queue index */
+
+  /* XDP flags */
+  uint bind_flags;   /* sockaddr_xdp.sxdp_flags (e.g., XDP_ZEROCOPY) */
+  
+  /* Core dump configuration */
+  int core_dump;     /* Include xsk memory in core dumps */
+};
+```
+
+### Important Flags
+
+**XDP_FLAGS_DRV_MODE**:
+- Driver mode (fast path)
+- XDP support in NIC driver before sk_buff allocation
+- Best performance
+- Hardware/driver dependent
+
+**XDP_FLAGS_SKB_MODE**:
+- Socket buffer mode (fallback)
+- Uses Linux sk_buff for memory management
+- Works everywhere
+- Slower than driver mode
+
+**XDP_ZEROCOPY**:
+- Enables zero-copy I/O
+- UMEM directly accessible to NIC via DMA
+- Requires driver mode
+- Eliminates software packet copies
+
+## Zero-Copy I/O
+
+With `XDP_FLAGS_DRV_MODE` and `XDP_ZEROCOPY`:
+
+1. **PCIe device** initiates DMA write to DRAM
+2. **Device driver** signals new packet arrival
+3. **Kernel XDP** passes pointer through to net tile
+4. **Net tile** identifies recipient app tile
+5. **Net tile** passes pointer via mcache to app tile
+6. **App tile** reads packet data directly from UMEM
+
+**No software copies** from NIC to application!
+
+<Note>
+Firedancer did not initially have zero-copy RX. Changing to zero-copy required less than 500 lines of code changed at the net tile. No changes to app tile code were required. This demonstrates the power of the Tango message queue design.
+</Note>
+
+## IOMMU Protection
+
+The UMEM region is shared with hardware:
+
+**Access permissions:**
+- Firedancer app tiles: read-only
+- Firedancer net tiles: read-write
+- Linux kernel: read-write
+- PCIe network devices: read-write (via IOMMU)
+
+The IOMMU (I/O Memory Management Unit):
+- Provides memory protection for DMA
+- Prevents NIC from accessing arbitrary memory
+- Allows zero-copy while maintaining security
+
+## Supported Drivers
+
+Well-tested drivers for Firedancer:
+
+```
+Driver    NIC Model              Notes
+------    ---------              -----
+ixgbe     Intel X540             Stable, widely available
+i40e      Intel X710 series      Good performance
+ice       Intel E800 series      Latest generation
+```
+
+AF_XDP works with any Ethernet interface, but driver quality varies:
+- Driver mode support varies by driver
+- Zero-copy support varies by driver
+- Performance characteristics differ
+
+<Info>
+Results may vary across drivers. Popular, well-tested drivers generally have better XDP support and fewer bugs.
+</Info>
+
+## Netlink Integration
+
+Firedancer's AF_XDP stack integrates with Linux networking via netlink:
+
+### Configuration Sources
+
+**Interface table**: Network interface information
+
+**Route tables**: IPv4 routes from `local` and `main` tables
+
+**Neighbor tables**: ARP entries for XDP-enabled Ethernet interfaces
+
+### Netbase Shared Memory
+
+The netlink tile maintains a read-only cache ("netbase" workspace) containing:
+- Interface configurations
+- Routing information  
+- Neighbor (ARP) entries
+
+Net tiles have read-only access to this shared memory.
+
+### ARP Handling
+
+Neighbor discovery (ARP on IPv4):
+
+1. **App tile** needs to send to IP address
+2. **Net tile** checks neighbor table for MAC address
+3. If not found, **net tile** notifies netlink tile
+4. **Netlink tile** requests neighbor solicitation via netlink
+5. **Kernel** broadcasts ARP request
+6. **ARP response** received, kernel updates neighbor table
+7. **Netlink tile** updates netbase shared memory
+8. **Net tile** can now send packet
+
+<Note>
+The netlink tile deduplicates neighbor solicitation requests to prevent flooding from line-rate traffic.
+</Note>
+
+## Security Considerations
+
+### Required Capabilities
+
+AF_XDP requires:
+- `CAP_SYS_ADMIN` - System administration
+- `CAP_NET_RAW` - Raw network access
+
+This is why Firedancer requires root permissions on Linux.
+
+### Isolation
+
+The netlink tile isolates itself from untrusted inputs:
+- Separate process with own sandbox
+- Only net tiles can communicate with it
+- Net tiles have read-only access to netbase
+- Malicious netlink tile can compromise net tiles, but not vice versa
+
+### XDP Program
+
+Firedancer installs an XDP program on the interface that:
+- Redirects Firedancer traffic to AF_XDP sockets
+- Passes other traffic to Linux stack (XDP_PASS)
+- Unloaded when Firedancer exits
+
+Other applications on the system continue working normally.
+
+## Limitations
+
+### Monitoring
+
+<Warning>
+Packets received and sent via AF_XDP will not appear under standard network monitoring tools like `tcpdump`.
+</Warning>
+
+Use Firedancer's built-in packet capture facilities instead.
+
+### Interface Sharing
+
+- Firedancer cannot share an interface with other AF_XDP apps
+- May cause performance impact to other apps using Linux networking on shared interfaces
+- Only one external network interface supported (plus loopback)
+
+### IPv6
+
+Firedancer does not support IPv6:
+- Practically all Solana traffic uses IPv4 (as of Feb 2025)
+- IPv6 would be more expensive (lower MTU, mandatory UDP checksums, longer addresses)
+- Adding IPv6 support would be straightforward if needed
+
+## Performance Characteristics
+
+### Target Performance
+
+- **RX throughput**: ~20 million packets per second
+- **Kernel wake-ups**: ~20,000 times per second
+- **Busy polling**: Net tile never sleeps
+
+### Optimizations
+
+**Preferred busy polling**: Reduces latency by polling more aggressively
+
+**Zero-copy I/O**: Eliminates software copies via DMA
+
+**Batching**: RX and TX processed in batches
+
+**Cache optimization**: Critical structures aligned to cache lines
+
+### Future Improvements
+
+- `SO_PREFERRED_BUSY_POLL` not yet used
+- IRQ affinity not yet configured
+- NIC interrupts not yet disabled
+- Could reduce RX mcache scaling from O(n*m) to O(max(n,m))
+- tx_free ring probably obsolete (could move COMPLETION→TX directly)

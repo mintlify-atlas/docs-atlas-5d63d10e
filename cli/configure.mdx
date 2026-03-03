@@ -1,0 +1,160 @@
+---
+title: fdctl configure
+description: Configure the operating system environment to run Firedancer
+---
+
+Configures the operating system so that it can run Firedancer. This command manages system-level settings required for optimal validator performance.
+
+See [the initialization guide](/operations/initialization) for more information.
+
+## Usage
+
+```bash
+fdctl configure <subcommand> [stages...] --config <path>
+```
+
+## Arguments
+
+<ParamField path="--config" type="string" required>
+  Path to a configuration TOML file to configure the validator with. This must be the same configuration file the validator will be started with.
+</ParamField>
+
+## Configuration Stages
+
+There are several stages to each configure command:
+
+<AccordionGroup>
+  <Accordion title="hugetlbfs">
+    Reserves huge and gigantic pages for use by Firedancer and mounts huge page filesystems under a path specified in the configuration TOML file.
+  </Accordion>
+
+  <Accordion title="sysctl">
+    Set required kernel parameters for optimal validator performance.
+  </Accordion>
+
+  <Accordion title="hyperthreads">
+    Disables hyperthreaded pair for critical CPU cores to ensure consistent performance.
+  </Accordion>
+
+  <Accordion title="bonding">
+    Prepares bonded network devices for XDP networking.
+  </Accordion>
+
+  <Accordion title="ethtool-channels">
+    Configures the number of channels on the network device.
+  </Accordion>
+
+  <Accordion title="ethtool-offloads">
+    Modify offload feature flags on the network device.
+  </Accordion>
+
+  <Accordion title="ethtool-loopback">
+    Disables UDP segmentation on the loopback device.
+  </Accordion>
+</AccordionGroup>
+
+## Subcommands
+
+### configure init
+
+Prepare the operating system environment to run Firedancer. This will reserve and mount the huge page filesystems, set the kernel parameters, and configure the number of combined channels on the network device.
+
+```bash
+fdctl configure init <stage>... --config <path>
+```
+
+**Example**: Initialize all stages
+```bash
+sudo fdctl configure init hugetlbfs sysctl ethtool-channels ethtool-offloads ethtool-loopback --config config.toml
+```
+
+**Example**: Initialize specific stages
+```bash
+sudo fdctl configure init hugetlbfs sysctl --config config.toml
+```
+
+#### Required Capabilities
+
+<ParamField path="root" type="capability">
+  Required for:
+  - Increasing `/proc/sys/vm/nr_hugepages` and mounting hugetlbfs filesystems (`hugetlbfs` stage)
+  - Increasing network device channels with `ethtool --set-channels` (`ethtool-channels` stage)
+  - Disabling network device offloads with `ethtool --offload` (`ethtool-offloads` stage)
+  - Disabling network device tx-udp-segmentation (`ethtool-loopback` stage)
+</ParamField>
+
+<ParamField path="CAP_SYS_ADMIN" type="capability">
+  Required for setting kernel parameters in `/proc/sys` (only applies for the `sysctl` stage)
+</ParamField>
+
+### configure check
+
+Check if the operating system environment is properly configured. Exits with a non-zero exit code if it is not, after printing relevant diagnostics to `stderr`.
+
+```bash
+fdctl configure check <stage>... --config <path>
+```
+
+**Example**: Check all configuration
+```bash
+fdctl configure check hugetlbfs sysctl ethtool-channels ethtool-offloads ethtool-loopback --config config.toml
+```
+
+<Tip>
+  Use `configure check` before starting the validator to ensure all system prerequisites are met.
+</Tip>
+
+### configure fini
+
+Remove any Firedancer specific operating system configuration still lingering. This only unmounts the `hugetlbfs` stages and returns the reserved huge and gigantic pages to the kernel pool.
+
+```bash
+fdctl configure fini <stage>... --config <path>
+```
+
+**Example**:
+```bash
+sudo fdctl configure fini hugetlbfs --config config.toml
+```
+
+<Warning>
+  The `fini` command will not reduce sysctls that were earlier increased, or change the network channel count back, as the original values are not stored.
+</Warning>
+
+#### Required Capabilities
+
+<ParamField path="root" type="capability">
+  Required for removing directories from `/mnt` and unmounting hugetlbfs (only applies for the `hugetlbfs` stage)
+</ParamField>
+
+## Configuration File Example
+
+<CodeGroup>
+```toml config.toml
+[hugetlbfs]
+    mount_path = "/mnt/.fd"
+[layout]
+    net_tile_count = 2
+[tiles]
+    [net]
+        interface = "ens3f0"
+```
+</CodeGroup>
+
+## Workflow
+
+Typical workflow for configuring a system:
+
+1. **Create configuration file** with your system-specific settings
+2. **Initialize configuration**: `sudo fdctl configure init hugetlbfs sysctl ethtool-channels ethtool-offloads ethtool-loopback --config config.toml`
+3. **Verify configuration**: `fdctl configure check hugetlbfs sysctl ethtool-channels ethtool-offloads ethtool-loopback --config config.toml`
+4. **Run validator**: `sudo fdctl run --config config.toml`
+
+When finished:
+
+5. **Clean up** (optional): `sudo fdctl configure fini hugetlbfs --config config.toml`
+
+## Related Commands
+
+- [fdctl run](/cli/run) - Start the validator
+- [fdctl mem](/cli/other-commands#mem) - View memory requirements

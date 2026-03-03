@@ -1,0 +1,236 @@
+---
+title: Monitoring
+description: Monitor your Firedancer validator health and performance
+---
+
+Firedancer provides multiple ways to monitor your validator's health and performance, from command-line tools to live dashboards and Prometheus metrics.
+
+## Agave CLI Tools
+
+Because Frankendancer runs the Agave validator, you can monitor it with standard Agave command-line tools.
+
+First, build the `solana` CLI binary:
+
+```bash
+make solana
+```
+
+The compiled binary is placed in `./build/native/gcc/bin` by default.
+
+<Note>
+  Many monitoring commands require RPC to be enabled on your validator. See the configuration guide for details on enabling RPC.
+</Note>
+
+### Check Gossip Status
+
+Verify your validator has joined the gossip network:
+
+```bash
+solana -ut gossip
+```
+
+**Example output:**
+```
+IP Address      | Identity                                     | Gossip | TPU   | RPC Address           | Version    | Feature Set
+----------------+----------------------------------------------+--------+-------+-----------------------+------------+----------------
+74.118.136.198  | 2CY8VXH2jummjSmwcusSj2jGMiaHE4eo7WQ9LScxykvt | 8001   | 9001  | 74.118.136.198:8899   | 0.106.11814| 4215500110
+```
+
+### Check Catchup Status
+
+Verify your validator is caught up with the cluster:
+
+```bash
+solana -ut catchup --our-localhost
+```
+
+**Example output:**
+```
+⠤ 1 slot(s) behind (us:123 them:124)
+```
+
+### Verify Voting
+
+Ensure your validator is voting:
+
+```bash
+solana -ut validators
+```
+
+**Example output:**
+```
+   Identity                                      Vote Account                            Commission  Last Vote        Root Slot     Skip Rate  Credits  Version            Active Stake
+2CY8VXH2jummjSmwcusSj2jGMiaHE4eo7WQ9LScxykvt  uhiGpdNqcqPGzYuRfVxjiHQWKKJPwKRSaPiXXxwSy9K   100%  279227304 ( -1)  279227273 ( -1)   0.00%    54287  0.106.11814     70100.022292880 SOL (0.03%)
+```
+
+### Check Block Production
+
+Ensure your validator is producing blocks:
+
+```bash
+solana -ut block-production
+```
+
+**Example output:**
+```
+  Identity                                         Leader Slots  Blocks Produced    Skipped Slots        Skip Rate
+  2CY8VXH2jummjSmwcusSj2jGMiaHE4eo7WQ9LScxykvt               16               16                0            0.00%
+```
+
+<Note>
+  You can also use `agave-validator --ledger <PATH> monitor` with Frankendancer. For that, you need to build the `agave-validator` binary from the Agave repository.
+</Note>
+
+## Prometheus Metrics
+
+Firedancer exposes a comprehensive set of Prometheus-compatible metrics at an HTTP endpoint. By default, metrics are available on port `7999`, but this is configurable in your TOML file.
+
+Fetch metrics with curl:
+
+```bash
+curl http://localhost:7999/metrics
+```
+
+**Example output:**
+```
+# HELP tile_pid The process ID of the tile.
+# TYPE tile_pid gauge
+tile_pid{kind="net",kind_id="0"} 1108973
+tile_pid{kind="quic",kind_id="0"} 1108975
+tile_pid{kind="verify",kind_id="0"} 1108978
+```
+
+See the metrics API documentation for detailed information on available metrics.
+
+### Setting Up Prometheus
+
+Add Firedancer as a scrape target in your Prometheus configuration:
+
+```yaml prometheus.yml
+scrape_configs:
+  - job_name: 'firedancer'
+    static_configs:
+      - targets: ['localhost:7999']
+```
+
+## Live Monitoring with fdctl
+
+Firedancer ships with a built-in monitoring tool you can run on the same host as your validator to view tile performance information in real-time.
+
+```bash
+fdctl monitor --config ~/config.toml
+```
+
+**Example output:**
+```
+snapshot for 2024-06-25 17:32:25.795577630 GMT+00
+    tile |     pid |      stale | heart |        sig | in backp |           backp cnt |  % hkeep |  % backp |   % wait |  % ovrnp |  % ovrnr |  % filt1 |  % filt2 | % finish
+---------+---------+------------+-------+------------+----------+---------------------+----------+----------+----------+----------+----------+----------+----------+----------
+     net | 1108973 |          - |     - |  run( run) |   -(  -) |          0(     +0) |   40.118 |    0.000 |   59.882 |    0.000 |    0.000 |    0.000 |    0.000 |    0.000
+    quic | 1108975 |          - |     - |  run( run) |   -(  -) |          0(     +0) |    0.325 |    0.000 |   99.675 |    0.000 |    0.000 |    0.000 |    0.000 |    0.000
+  verify | 1108978 |          - |     - |  run( run) |   -(  -) |          0(     +0) |    0.496 |    0.000 |   99.504 |    0.000 |    0.000 |    0.000 |    0.000 |    0.000
+[...]
+```
+
+This monitor provides real-time visibility into:
+
+- **Tile states** - Running, stalled, or backed up
+- **Process IDs** - For each tile
+- **CPU utilization** - How tiles spend their time
+- **Backpressure** - Whether tiles are overloaded
+- **Health metrics** - Heartbeat and staleness indicators
+
+## Web-Based GUI
+
+Firedancer includes a web-based GUI that provides rich visualizations of validator performance.
+
+<Steps>
+  <Step title="Enable the GUI">
+    Add to your `config.toml`:
+    ```toml
+    [tiles.gui]
+        enabled = true
+    ```
+  </Step>
+  
+  <Step title="Configure access (optional)">
+    By default, the GUI listens on `127.0.0.1:80`. To change this:
+    ```toml
+    [tiles.gui]
+        enabled = true
+        gui_listen_address = "0.0.0.0"
+        gui_listen_port = 8080
+    ```
+  </Step>
+  
+  <Step title="Access the GUI">
+    Open your browser and navigate to the configured address (e.g., `http://localhost:80`).
+  </Step>
+</Steps>
+
+<Warning>
+  If you expose the GUI on a public interface, use a firewall to restrict access. The GUI provides detailed operational information about your validator.
+</Warning>
+
+## Understanding Tile Metrics
+
+Firedancer's architecture uses tiles (individual processes) for different tasks. Key tiles to monitor:
+
+- **net** - Network packet processing
+- **quic** - QUIC protocol handling
+- **verify** - Transaction signature verification (multiple tiles)
+- **dedup** - Transaction deduplication
+- **pack** - Transaction packing for blocks
+- **shred** - Shred handling and verification
+- **sign** - Block signing
+
+### Key Metrics to Watch
+
+**% wait** - Percentage of time the tile is waiting for work. Higher is better (means not overloaded).
+
+**% hkeep** - Percentage of time doing housekeeping. Some is normal.
+
+**% backp** - Percentage of time backpressured (waiting for downstream tiles). Sustained high values indicate bottlenecks.
+
+**backp cnt** - Number of times backpressure occurred. Frequent spikes may indicate capacity issues.
+
+## Process Tree
+
+Every tile in Firedancer runs in a separate process for security isolation. You can view the complete process tree:
+
+```bash
+pstree <fdctl-pid> -as
+```
+
+**Example output:**
+```
+fdctl run --config ~/config.toml
+  └─fdctl run --config ~/config.toml
+      ├─fdctl run-agave --config-fd 0
+      │   └─35*[{fdctl}]
+      ├─diag:0 run1 diag 0 --pipe-fd 20 --config-fd 0
+      ├─dedup:0 run1 dedup 0 --pipe-fd 15 --config-fd 0
+      ├─net:0 run1 net 0 --pipe-fd 7 --config-fd 0
+      ├─quic:0 run1 quic 0 --pipe-fd 8 --config-fd 0
+      └─verify:0 run1 verify 0 --pipe-fd 9 --config-fd 0
+```
+
+<Note>
+  If any process dies or is killed, it will bring all other processes down with it. This is by design for clean shutdown and consistency.
+</Note>
+
+## Logging
+
+Firedancer maintains two logs:
+
+1. **Permanent log** - Written to file for historical analysis
+2. **Ephemeral log** - Written to stderr for real-time observation
+
+You can increase the stderr log verbosity in your configuration:
+
+```toml config.toml
+[log]
+    level_stderr = "INFO"
+```
+
+Available log levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`

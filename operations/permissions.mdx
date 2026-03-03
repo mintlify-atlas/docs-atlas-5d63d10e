@@ -1,0 +1,348 @@
+---
+title: User Permissions
+description: Understanding Firedancer's user privileges and security model
+---
+
+Firedancer uses a two-user security model to minimize privilege escalation risks while maintaining the capabilities needed for high-performance networking.
+
+## Two-User Model
+
+There are two users involved in running Firedancer:
+
+### 1. Startup User
+
+The user that launches `fdctl` - typically **root**.
+
+**Required for:**
+- Starting the validator (`fdctl run`)
+- System configuration (`fdctl configure`)
+- Setting up kernel bypass networking
+- Configuring huge pages and kernel parameters
+
+**Privilege requirements:**
+- Most commands require root privileges
+- Some commands can run with specific capabilities (not recommended)
+- The `check` mode never requires privileges
+
+<Warning>
+  It is recommended to use the root user when launching Firedancer. While some operations support capabilities instead of root, using capabilities is more complex and not recommended for most operators.
+</Warning>
+
+### 2. Runtime User
+
+The user Firedancer switches to after privileged initialization - specified in your `config.toml`.
+
+**Example configuration:**
+```toml
+user = "firedancer"
+```
+
+**Security requirements:**
+- Should be a minimally privileged user
+- Must **never** be root or another superuser
+- Should **not** be in the sudoers file
+- Should have no special privileges or capabilities
+- Only needs read access to configuration files and keypairs
+- Needs write access to ledger and snapshots directories
+
+<Note>
+  Only `fdctl run` and `fdctl monitor` switch to the non-privileged user. Other commands run as the startup user until completion.
+</Note>
+
+## Creating the Runtime User
+
+Create a dedicated, unprivileged user for running Firedancer:
+
+```bash
+sudo useradd -r -s /bin/false -m -d /home/firedancer firedancer
+```
+
+This creates a system user with:
+- No login shell (`/bin/false`)
+- Home directory at `/home/firedancer`
+- No special privileges
+
+## File Permissions
+
+### Configuration Files
+
+Your configuration file should be readable by the runtime user:
+
+```bash
+sudo chown root:firedancer ~/config.toml
+sudo chmod 640 ~/config.toml
+```
+
+### Keypair Files
+
+Validator and vote keypairs must be readable by the runtime user:
+
+```bash
+sudo chown firedancer:firedancer /home/firedancer/validator-keypair.json
+sudo chmod 600 /home/firedancer/validator-keypair.json
+
+sudo chown firedancer:firedancer /home/firedancer/vote-keypair.json
+sudo chmod 600 /home/firedancer/vote-keypair.json
+```
+
+<Warning>
+  Never make keypair files world-readable. They contain sensitive cryptographic material.
+</Warning>
+
+### Ledger Directory
+
+The runtime user needs write access to the ledger directory:
+
+```bash
+sudo mkdir -p /home/firedancer/.firedancer/fd1/ledger
+sudo chown -R firedancer:firedancer /home/firedancer/.firedancer
+```
+
+By default, the ledger is stored at `/home/<user>/.firedancer/fd1/ledger`. You can customize this in your configuration.
+
+### Snapshots Directory
+
+The runtime user needs write access for downloading and storing snapshots:
+
+```bash
+sudo mkdir -p /home/firedancer/.firedancer/fd1/snapshots
+sudo chown -R firedancer:firedancer /home/firedancer/.firedancer
+```
+
+## Linux Capabilities
+
+While root is recommended, advanced operators can use capabilities instead. Required capabilities vary by command.
+
+To see required capabilities for a command, run it unprivileged:
+
+```bash
+fdctl configure init all --config ~/config.toml
+```
+
+Firedancer will report which capabilities are needed if run without sufficient privileges.
+
+### Common Capability Requirements
+
+| Operation | Required Capabilities |
+|-----------|----------------------|
+| AF_XDP networking | `CAP_SYS_ADMIN`, `CAP_NET_RAW` |
+| Kernel parameters (sysctl) | `CAP_SYS_ADMIN` |
+| Huge page allocation | Root only (capabilities insufficient) |
+| Network device configuration | Root only (capabilities insufficient) |
+
+<Warning>
+  Do not use `setcap(8)` to grant capabilities to the `fdctl` binary. This increases the attack surface for local privilege escalation. Always run fdctl with elevated privileges directly (via sudo or as root).
+</Warning>
+
+## Security Isolation
+
+Firedancer implements multiple layers of security isolation:
+
+### Process Isolation
+
+Every tile (component) runs in a separate process:
+
+```bash
+pstree <fdctl-pid> -as
+```
+
+**Example output:**
+```
+fdctl run --config ~/config.toml
+  ├─net:0 run1 net 0 --pipe-fd 7 --config-fd 0
+  ├─quic:0 run1 quic 0 --pipe-fd 8 --config-fd 0
+  ├─verify:0 run1 verify 0 --pipe-fd 9 --config-fd 0
+  └─...
+```
+
+If one tile crashes or is compromised, others are isolated.
+
+### Seccomp Filters
+
+Tiles run with seccomp filters that restrict available system calls to only those required for operation.
+
+### User Namespaces
+
+Tiles use user namespaces for additional isolation from the host system.
+
+### Dropped Capabilities
+
+After initialization, tiles drop all unnecessary capabilities to minimize privilege.
+
+### Memory Protections
+
+Network packet memory (UMEM regions) is mapped read-only to application tiles, preventing:
+
+- Corruption of network traffic
+- Tampering with packets from other tiles
+
+## Privilege Timeline
+
+Here's how privileges are used throughout the Firedancer lifecycle:
+
+<Steps>
+  <Step title="Launch as root">
+    Operator runs:
+    ```bash
+    sudo fdctl run --config ~/config.toml
+    ```
+  </Step>
+  
+  <Step title="Privileged initialization">
+    Firedancer (as root) performs:
+    - Validates configuration
+    - Allocates huge pages
+    - Sets up AF_XDP networking
+    - Installs XDP programs
+    - Opens network sockets
+  </Step>
+  
+  <Step title="Switch to runtime user">
+    Main process switches to unprivileged user specified in config:
+    ```c
+    setuid(runtime_user_uid)
+    ```
+  </Step>
+  
+  <Step title="Spawn tile processes">
+    Each tile spawns as the runtime user with:
+    - Seccomp filters enabled
+    - User namespaces active
+    - Capabilities dropped
+    - Memory protections applied
+  </Step>
+  
+  <Step title="Normal operation">
+    All tiles run as the unprivileged runtime user. Even if a tile is compromised, it cannot:
+    - Access other users' files
+    - Modify system configuration
+    - Escalate privileges
+    - Affect other tiles' memory
+  </Step>
+</Steps>
+
+## Checking Current Privileges
+
+Verify the startup user:
+
+```bash
+whoami
+```
+
+Check if running as root:
+
+```bash
+id -u  # Should be 0 for root
+```
+
+Verify the runtime user exists:
+
+```bash
+id firedancer
+```
+
+Check file permissions:
+
+```bash
+ls -l ~/config.toml
+ls -l /home/firedancer/validator-keypair.json
+ls -ld /home/firedancer/.firedancer
+```
+
+## Common Permission Issues
+
+### "Permission denied" when starting validator
+
+**Solution:** Ensure you're running as root:
+
+```bash
+sudo fdctl run --config ~/config.toml
+```
+
+### Runtime user cannot read keypairs
+
+**Solution:** Fix keypair file permissions:
+
+```bash
+sudo chown firedancer:firedancer /path/to/keypair.json
+sudo chmod 600 /path/to/keypair.json
+```
+
+### Cannot write to ledger directory
+
+**Solution:** Ensure runtime user owns the ledger directory:
+
+```bash
+sudo chown -R firedancer:firedancer /home/firedancer/.firedancer
+```
+
+### Configure command requires privileges
+
+**Solution:** Run with sudo:
+
+```bash
+sudo fdctl configure init all --config ~/config.toml
+```
+
+The `check` mode never requires privileges:
+
+```bash
+fdctl configure check all --config ~/config.toml
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use a dedicated user">
+    Create a dedicated, unprivileged user for Firedancer runtime. Never use root or a user with sudo access.
+  </Step>
+  
+  <Step title="Minimize file permissions">
+    Set the most restrictive permissions possible:
+    - Keypairs: `600` (owner read/write only)
+    - Config: `640` (owner read/write, group read)
+    - Directories: `700` (owner access only)
+  </Step>
+  
+  <Step title="Launch as root directly">
+    Use `sudo` or root directly. Don't use capabilities or setcap for the fdctl binary.
+  </Step>
+  
+  <Step title="Store keypairs securely">
+    Consider using:
+    - Encrypted filesystems for keypair storage
+    - Hardware security modules (HSMs) for vote signing
+    - Separate disk partitions with restricted mount options
+  </Step>
+  
+  <Step title="Monitor privilege usage">
+    Regularly audit:
+    - Which users have sudo access
+    - File permissions on sensitive files
+    - Processes running as root
+  </Step>
+</Steps>
+
+## Systemd Service
+
+When running Firedancer as a systemd service, configure privileges correctly:
+
+```ini firedancer.service
+[Unit]
+Description=Firedancer Validator
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/path/to/fdctl run --config /etc/firedancer/config.toml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+<Note>
+  The service starts as root (`User=root`), but Firedancer will switch to the user specified in config.toml after initialization.
+</Note>

@@ -1,0 +1,397 @@
+---
+title: QUIC Tile Internals
+description: Internal architecture of Firedancer's QUIC tile for handling TPU transactions over QUIC and UDP protocols
+---
+
+The QUIC tile provides a TPU (Transaction Processing Unit) server that handles incoming transactions clients request to be included in blocks. It supports both TPU/UDP and TPU/QUIC protocols.
+
+## Overview
+
+The QUIC tile acts as a plain Tango producer:
+- Defragments multi-packet TPU streams from QUIC
+- Each frag_meta refers to a complete transaction
+- Requires dcache MTU at least as large as max serialized transaction size
+- Does not service network devices directly (relies on net tiles)
+- Arbitrary number of QUIC tiles can run
+- Each UDP flow must stick to one QUIC tile
+
+## Architecture
+
+### Tile Structure
+
+The QUIC tile consists of:
+
+```
+┌──────────────┐
+│   Net Tile   │
+│  (AF_XDP)    │
+└──────┬───────┘
+       │ UDP/IP packets
+       v
+┌──────────────┐
+│  QUIC Tile   │
+│              │
+│ - UDP fast   │
+│ - QUIC slow  │
+│ - Reassembly │
+└──────┬───────┘
+       │ Complete transactions
+       v
+┌──────────────┐
+│ Verify Tile  │
+└──────────────┘
+```
+
+### Output Indices
+
+```c
+#define OUT_IDX_VERIFY 0
+#define OUT_IDX_NET    1
+```
+
+The QUIC tile has two output paths:
+- **VERIFY**: Complete transactions sent to verify tile
+- **NET**: Outgoing QUIC packets sent back to net tile
+
+## Transaction Processing
+
+### UDP Fast Path
+
+Legacy TPU/UDP transactions are processed via `legacy_stream_notify`:
+
+- UDP transactions must fit in one packet (no fragmentation)
+- Entire packet received when notify is called
+- Published directly to verify tile
+- Simple, fast path with minimal overhead
+
+<CodeGroup>
+```c UDP Transaction Processing
+static void
+legacy_stream_notify( fd_quic_ctx_t * ctx,
+                      uchar *         packet,
+                      ulong           packet_sz,
+                      uint            ipv4 ) {
+  
+  long                tspub    = ctx->now;
+  fd_tpu_reasm_t *    reasm    = ctx->reasm;
+  fd_stem_context_t * stem     = ctx->stem;
+  fd_frag_meta_t *    mcache   = stem->mcaches[0];
+  void *              base     = ctx->verify_out_mem;
+  ulong               seq      = stem->seqs[0];
+
+  int err = fd_tpu_reasm_publish_fast( 
+    reasm, packet, packet_sz, mcache, 
+    base, seq, tspub, ipv4, FD_TXN_M_TPU_SOURCE_UDP
+  );
+  
+  if( FD_LIKELY( err==FD_TPU_REASM_SUCCESS ) ) {
+    fd_stem_advance( stem, 0UL );
+    ctx->metrics.txns_received_udp++;
+  }
+}
+```
+</CodeGroup>
+
+### QUIC Path
+
+QUIC protocol handling involves:
+
+1. **Packet Reception**: IP packets received from net tile
+2. **QUIC Processing**: `fd_quic_process_packet()` handles QUIC protocol
+3. **Stream Reassembly**: Multi-packet transactions are reassembled
+4. **Publishing**: Complete transactions sent to verify tile
+
+<Info>
+The QUIC tile always publishes messages downstream, even without credits available. It ignores flow control of the downstream verify tile, enabling the QUIC tile to publish as fast as possible.
+</Info>
+
+## Stream Reception
+
+The `quic_stream_rx` callback handles incoming QUIC stream data:
+
+### Fast Path (Single Packet)
+
+When `offset==0` and `fin` flag is set:
+
+```c
+if( offset==0UL && fin ) {
+  // Transaction fits in single QUIC packet
+  if( FD_UNLIKELY( data_sz<FD_TXN_MIN_SERIALIZED_SZ ) ) {
+    ctx->metrics.quic_txn_too_small++;
+    return FD_QUIC_SUCCESS; // drop
+  }
+  if( FD_UNLIKELY( oversz ) ) {
+    ctx->metrics.quic_txn_too_large++;
+    return FD_QUIC_SUCCESS; // drop
+  }
+  // Publish directly
+}
+```
+
+### Slow Path (Fragmented)
+
+Multi-packet transactions go through reassembly:
+- Fragments tracked per connection and stream
+- Reassembly buffer manages incomplete transactions
+- Published when complete transaction received
+
+## Connection Management
+
+### QUIC Limits
+
+The tile configures QUIC with:
+
+```c
+fd_quic_limits_t limits = {
+  .conn_cnt      = tile->quic.max_concurrent_connections,
+  .handshake_cnt = tile->quic.max_concurrent_handshakes,
+  .conn_id_cnt                 = FD_QUIC_MIN_CONN_ID_CNT,
+  .inflight_frame_cnt          = 64UL * max_concurrent_connections,
+  .min_inflight_frame_cnt_conn = 32UL
+};
+```
+
+### Connection Finalization
+
+When connections close, the `quic_conn_final` callback:
+- Counts abandoned reassembly streams
+- Updates metrics for active streams
+- Tracks abandoned transactions
+
+```c
+static void
+quic_conn_final( fd_quic_conn_t * conn,
+                 void *           quic_ctx ) {
+  fd_quic_ctx_t * ctx = quic_ctx;
+  long abandon_cnt = fd_long_max( conn->srx->rx_streams_active, 0L );
+  ctx->metrics.reasm_active    -= abandon_cnt;
+  ctx->metrics.reasm_abandoned += (ulong)abandon_cnt;
+}
+```
+
+## Packet Filtering
+
+### Before Fragment Processing
+
+The `before_frag` callback filters incoming packets:
+
+```c
+static int
+before_frag( fd_quic_ctx_t * ctx,
+             ulong           in_idx,
+             ulong           seq,
+             ulong           sig ) {
+  // Check protocol
+  ulong proto = fd_disco_netmux_sig_proto( sig );
+  if( FD_UNLIKELY( proto!=DST_PROTO_TPU_UDP && 
+                   proto!=DST_PROTO_TPU_QUIC ) ) 
+    return 1;
+
+  // Round-robin load balancing
+  ulong hash = fd_disco_netmux_sig_hash( sig );
+  if( FD_UNLIKELY( (hash % ctx->round_robin_cnt) != ctx->round_robin_id ) ) 
+    return 1;
+
+  return 0;
+}
+```
+
+Filtering criteria:
+- **Protocol**: Only TPU_UDP or TPU_QUIC
+- **Load balancing**: Round-robin based on hash
+
+### During Fragment Processing
+
+The `during_frag` callback copies packet data:
+
+```c
+static void
+during_frag( fd_quic_ctx_t * ctx,
+             ulong           in_idx,
+             ulong           seq,
+             ulong           sig,
+             ulong           chunk,
+             ulong           sz,
+             ulong           ctl ) {
+  void const * src = fd_net_rx_translate_frag( 
+    &ctx->net_in_bounds[ in_idx ], chunk, ctl, sz
+  );
+  
+  // FIXME: This copy could be eliminated by combining 
+  // with decrypt operation
+  fd_memcpy( ctx->buffer, src, sz );
+}
+```
+
+<Note>
+The copy operation could potentially be optimized by combining it with the QUIC decrypt operation.
+</Note>
+
+## Transaction Validation
+
+### Size Checks
+
+Both UDP and QUIC paths validate transaction sizes:
+
+**Minimum size:**
+```c
+if( FD_UNLIKELY( data_sz<FD_TXN_MIN_SERIALIZED_SZ ) ) {
+  ctx->metrics.udp_pkt_too_small++;
+  return;
+}
+```
+
+**Maximum size:**
+```c
+if( FD_UNLIKELY( data_sz>FD_TPU_MTU ) ) {
+  ctx->metrics.udp_pkt_too_large++;
+  return;
+}
+```
+
+### Network Header Handling
+
+For UDP packets:
+```c
+ulong network_hdr_sz = fd_disco_netmux_sig_hdr_sz( sig );
+if( FD_UNLIKELY( sz<=network_hdr_sz ) ) {
+  ctx->metrics.udp_pkt_too_small++;
+  return;
+}
+ulong data_sz = sz - network_hdr_sz;
+```
+
+For QUIC packets:
+```c
+if( FD_UNLIKELY( sz<sizeof(fd_eth_hdr_t) ) ) 
+  FD_LOG_ERR(( "QUIC packet too small" ));
+uchar * ip_pkt = ctx->buffer + sizeof(fd_eth_hdr_t);
+ulong   ip_sz  = sz - sizeof(fd_eth_hdr_t);
+```
+
+## Metrics
+
+The QUIC tile tracks comprehensive metrics:
+
+### Transaction Metrics
+
+- `TXNS_RECEIVED_UDP` - UDP transactions received
+- `TXNS_RECEIVED_QUIC_FAST` - Single-packet QUIC transactions
+- `TXNS_RECEIVED_QUIC_FRAG` - Multi-packet QUIC transactions
+- `TXNS_OVERRUN` - Reassembly buffer overruns
+- `TXNS_ABANDONED` - Abandoned incomplete transactions
+
+### Connection Metrics
+
+- `CONNECTIONS_CREATED` - New connections established
+- `CONNECTIONS_CLOSED` - Clean connection closes
+- `CONNECTIONS_ABORTED` - Aborted connections
+- `CONNECTIONS_TIMED_OUT` - Connection timeouts
+- `CONNECTIONS_RETRIED` - Retry connections
+
+### Packet Metrics
+
+- `RECEIVED_PACKETS` - Total packets received
+- `RECEIVED_BYTES` - Total bytes received
+- `SENT_PACKETS` - Total packets sent
+- `SENT_BYTES` - Total bytes sent
+- `PKT_CRYPTO_FAILED` - Decryption failures
+- `PKT_NO_CONN` - Packets for unknown connections
+
+### Frame Metrics
+
+- `RECEIVED_FRAMES` - Frames received by type
+- `FRAME_FAIL_PARSE` - Frame parsing failures
+- `ACK_TX` - ACK frames transmitted
+
+<CodeGroup>
+```c Metrics Writing
+static inline void
+metrics_write( fd_quic_ctx_t * ctx ) {
+  FD_MCNT_SET( QUIC, TXNS_RECEIVED_UDP,       
+               ctx->metrics.txns_received_udp );
+  FD_MCNT_SET( QUIC, TXNS_RECEIVED_QUIC_FAST, 
+               ctx->metrics.txns_received_quic_fast );
+  FD_MCNT_SET( QUIC, TXNS_RECEIVED_QUIC_FRAG, 
+               ctx->metrics.txns_received_quic_frag );
+  
+  FD_MGAUGE_SET( QUIC, TXN_REASMS_ACTIVE,       
+                 (ulong)fd_long_max( ctx->metrics.reasm_active, 0L ) );
+  
+  FD_MCNT_SET( QUIC, RECEIVED_PACKETS, 
+               ctx->quic->metrics.net_rx_pkt_cnt );
+  FD_MCNT_SET( QUIC, SENT_PACKETS,     
+               ctx->quic->metrics.net_tx_pkt_cnt );
+  
+  // ... additional metrics
+}
+```
+</CodeGroup>
+
+## Performance Characteristics
+
+### Busy Polling
+
+The `before_credit` callback services QUIC without sleeping:
+
+```c
+static inline void
+before_credit( fd_quic_ctx_t *     ctx,
+               fd_stem_context_t * stem,
+               int *               charge_busy ) {
+  ctx->stem = stem;
+  long now = fd_clock_now( ctx->clock );
+  ctx->now = now;
+  *charge_busy = fd_quic_service( ctx->quic, now );
+}
+```
+
+- Continuously polls for QUIC events
+- No blocking or sleeping
+- Updates current time for QUIC protocol
+- Services connections and handles retransmissions
+
+### Memory Layout
+
+Scratch memory footprint includes:
+
+```c
+static inline ulong
+scratch_footprint( fd_topo_tile_t const * tile ) {
+  ulong out_depth = tile->quic.out_depth;
+  ulong reasm_max = tile->quic.reasm_cnt;
+  fd_quic_limits_t limits = quic_limits( tile );
+  
+  ulong l = FD_LAYOUT_INIT;
+  l = FD_LAYOUT_APPEND( l, alignof(fd_quic_ctx_t), 
+                        sizeof(fd_quic_ctx_t) );
+  l = FD_LAYOUT_APPEND( l, fd_quic_align(), 
+                        fd_quic_footprint( &limits ) );
+  l = FD_LAYOUT_APPEND( l, fd_tpu_reasm_align(), 
+                        fd_tpu_reasm_footprint( out_depth, reasm_max ) );
+  return FD_LAYOUT_FINI( l, scratch_align() );
+}
+```
+
+## Configuration
+
+### Tile Configuration
+
+Key configuration parameters:
+
+- `max_concurrent_connections` - Maximum simultaneous QUIC connections
+- `max_concurrent_handshakes` - Maximum simultaneous handshakes
+- `out_depth` - Output queue depth
+- `reasm_cnt` - Maximum concurrent reassemblies
+- `round_robin_cnt` - Number of QUIC tiles for load balancing
+- `round_robin_id` - This tile's ID in round-robin pool
+
+### Keylog Support
+
+For debugging, QUIC supports keylog output:
+
+```c
+#define FD_QUIC_KEYLOG_FLUSH_INTERVAL_NS ((long)100e6)
+```
+
+Keylog allows decrypting QUIC traffic in Wireshark for analysis.

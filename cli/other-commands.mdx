@@ -1,0 +1,267 @@
+---
+title: Other fdctl Commands
+description: Additional utility commands for Firedancer management
+---
+
+This page documents additional utility commands available in fdctl for validator management and diagnostics.
+
+## version
+
+Prints the current version of the validator to standard output and exits.
+
+### Usage
+
+```bash
+fdctl version
+```
+
+### Output
+
+The command writes diagnostic messages from logs to `stderr` and the version string to `stdout`.
+
+### Example
+
+```bash
+fdctl version
+```
+
+**Output**:
+```
+0.101.11814
+```
+
+---
+
+## shred-version
+
+Prints the current shred version of the cluster being joined, according to the entrypoints, to standard output and exits.
+
+### Usage
+
+```bash
+fdctl shred-version
+```
+
+### Output
+
+The command writes diagnostic messages from logs to `stderr` and the shred version to `stdout`.
+
+### Example
+
+```bash
+fdctl shred-version
+```
+
+**Output**:
+```
+9065
+```
+
+<Tip>
+  The shred version must match the cluster you're trying to join. This command helps verify compatibility before starting the validator.
+</Tip>
+
+---
+
+## metrics
+
+Prints the current validator metrics to stdout. Metrics can typically be accessed via HTTP when the `metric` tile is enabled, but the command can be used even if the metrics server is not enabled, or the validator has crashed.
+
+### Usage
+
+```bash
+fdctl metrics --config <path>
+```
+
+### Arguments
+
+<ParamField path="--config" type="string" required>
+  Path to the configuration TOML file used by the validator
+</ParamField>
+
+### Example
+
+```bash
+fdctl metrics --config ~/config.toml
+```
+
+**Output**:
+```
+# HELP tile_pid The process ID of the tile.
+# TYPE tile_pid gauge
+tile_pid{kind="netlnk",kind_id="0"} 627750
+tile_pid{kind="net",kind_id="0"} 627759
+...
+```
+
+<Tip>
+  This command is particularly useful for retrieving metrics when the HTTP metrics server is unavailable or when you need to script metrics collection.
+</Tip>
+
+---
+
+## set-identity
+
+Changes the identity key of a running validator.
+
+### Usage
+
+```bash
+fdctl set-identity <keypair> --config <path> [--require-tower] [--force]
+```
+
+### Arguments
+
+<ParamField path="keypair" type="string" required>
+  Path to an `identity.json` keypair file, or `-` to read the JSON formatted key from `stdin`
+</ParamField>
+
+<ParamField path="--config" type="string" required>
+  Path to a configuration TOML file of the validator to change identity for. This must be the same configuration file the validator was started with.
+</ParamField>
+
+<ParamField path="--require-tower" type="flag">
+  If specified, refuse to set the validator identity if saved tower state is not found
+</ParamField>
+
+<ParamField path="--force" type="flag">
+  If a `set-identity` operation is abandoned part way through, you will need to specify `--force` to reset the validator key state when trying again
+</ParamField>
+
+### Important Safety Information
+
+<Warning>
+  **Critical**: `set-identity` must be called with the configuration file you started the validator with, like `fdctl set-identity --config <config.toml>`. If the `config` argument is not provided, the command may not update the key on all tiles and your validator may start skipping slots.
+</Warning>
+
+<Warning>
+  **Consensus Safety**: It is not generally safe to call `set-identity`, as another validator might be running with the same identity, and if they both produce a block or vote concurrently, the validator may violate consensus and be subject to (future) slashing.
+</Warning>
+
+### Best Practices
+
+Best practice requires copying the `tower.bin` file from the prior validator to the new validator, to ensure that vote lockouts are respected.
+
+### Behavior
+
+- The validator will **not** change identity in the middle of a leader slot
+- The validator will wait until any in-progress leader slot completes before switching to the new identity
+- It is safe to call during or near a leader slot because of this wait
+- The command exits successfully (exit code 0) if the identity key was changed
+- Otherwise it will fail and print diagnostic messages to `stderr`
+
+### Failure Scenarios
+
+Reasons for failure include:
+- The validator being unable to open or load the tower (when `--require-tower` is specified)
+- Being unable to load or verify the provided identity key
+- Partial state from a cancelled previous `set-identity` operation (use `--force` to resolve)
+
+<Warning>
+  Currently due to implementation limitations, the key can be partially changed if the `set-identity` command is cancelled (for example with Ctrl+C) while running. The next call to `set-identity` might need to provide the `--force` argument to succeed if this occurs, to reset this partial state and proceed with setting a new key.
+</Warning>
+
+### Example
+
+<Tabs>
+  <Tab title="From File">
+    ```bash
+    fdctl set-identity ~/.firedancer/new-identity.json --config config.toml
+    ```
+  </Tab>
+  
+  <Tab title="From stdin">
+    ```bash
+    cat new-identity.json | fdctl set-identity - --config config.toml
+    ```
+  </Tab>
+  
+  <Tab title="With Tower Requirement">
+    ```bash
+    fdctl set-identity ~/.firedancer/new-identity.json --config config.toml --require-tower
+    ```
+  </Tab>
+  
+  <Tab title="With Force">
+    ```bash
+    fdctl set-identity ~/.firedancer/new-identity.json --config config.toml --force
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## mem
+
+Prints information about the memory requirements and the tile configuration and layout of the validator to `stdout` before exiting.
+
+### Usage
+
+```bash
+fdctl mem --config <path>
+```
+
+### Arguments
+
+<ParamField path="--config" type="string" required>
+  Path to a configuration TOML file to print memory usage information with
+</ParamField>
+
+### Output
+
+The command writes diagnostic messages from logs to `stderr` and memory information to `stdout`.
+
+### What It Shows
+
+Firedancer preallocates and locks all memory it needs from huge and gigantic page mounts before booting, and the `hugetlbfs` stage of `fdctl configure` will reserve the memory described here for exclusive use by Firedancer.
+
+The output includes:
+
+- **Summary**: Total tiles, total memory locked, required pages by type and NUMA node
+- **Workspaces**: Individual workspace memory allocations
+- **Links**: Inter-tile communication link configurations
+- **Tiles**: Tile-specific memory and CPU assignments
+
+### Example
+
+```bash
+fdctl mem --config config.toml
+```
+
+**Output**:
+```
+SUMMARY
+              Total Tiles: 17
+      Total Memory Locked: 27088932864 bytes (25 GiB + 234 MiB + 20 KiB)
+  Required Gigantic Pages: 25
+      Required Huge Pages: 117
+    Required Normal Pages: 27
+  Required Gigantic Pages (NUMA node 0): 25
+      Required Huge Pages (NUMA node 0): 117
+
+WORKSPACES
+   0 (  1 GiB):     net_quic  page_cnt=1  page_sz=gigantic  numa_idx=0   footprint=68173824    loose=1005563904
+   1 (  1 GiB):    net_shred  page_cnt=1  page_sz=gigantic  numa_idx=0   footprint=68173824    loose=1005563904
+[...]
+
+LINKS
+   0 ( 32 MiB):     net_quic  kind_id=0   wksp_id=0   depth=16384  mtu=2048       burst=1
+   1 ( 32 MiB):    net_shred  kind_id=0   wksp_id=1   depth=16384  mtu=2048       burst=1
+[...]
+
+TILES
+   0 (  3 GiB):          net  kind_id=0   wksp_id=18  cpu_idx=1   out_link=-1  in=[-2, -3]  out=[ 0,  1]
+   1 (  3 GiB):         quic  kind_id=0   wksp_id=19  cpu_idx=2   out_link=4   in=[ 0, -21]  out=[ 2, 20]
+[...]
+```
+
+<Tip>
+  Use this command before configuring your system to understand the memory requirements for your specific validator configuration.
+</Tip>
+
+## Related Commands
+
+- [fdctl configure](/cli/configure) - Configure OS for Firedancer
+- [fdctl run](/cli/run) - Run the validator
+- [fdctl monitor](/cli/monitor) - Monitor validator performance
+- [fdctl keys](/cli/keys) - Manage validator keys

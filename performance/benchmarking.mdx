@@ -1,0 +1,316 @@
+---
+title: Benchmarking
+description: Learn how to benchmark your Firedancer validator to measure transaction throughput and optimize your configuration
+---
+
+## Overview
+
+Firedancer includes a simple benchmarking tool for measuring the transaction throughput of the validator when it is leader, in transactions per second (TPS).
+
+<Warning>
+In practice, the Solana network performance is limited by two factors that are unrelated to what this tool measures:
+
+- The replay performance of the slowest nodes in the network, and if they can keep up
+- The consensus limits on block size and data size
+
+In particular, consensus limits on the Solana protocol limit the network strictly to around 81,000 TPS.
+</Warning>
+
+The benchmark tool can be useful for testing local affinity and layout configurations to ensure your hardware is properly configured for optimal performance.
+
+## How Benchmarking Works
+
+The benchmark runs on a single machine and performs the following steps:
+
+1. A new genesis is created, and set of accounts are pre-funded
+2. A set of CPU cores is assigned to generating and signing simple transactions using these accounts as fast as possible
+3. Another set of CPU cores is assigned to sending these transfers via QUIC over loopback to the locally running validator
+4. Around once a second, an RPC call is made to get the total count of transactions that have executed on the chain, and this information is printed to the console
+
+<Note>
+The benchmark is currently quite synthetic, as it only measures single node performance, in an idealized case where all transactions are non-conflicting.
+</Note>
+
+## Running a Benchmark
+
+The benchmark command is part of the `fddev` development binary, which can be built with:
+
+```bash
+make -j fddev
+```
+
+### Basic Benchmark
+
+Run a benchmark with default settings:
+
+```bash
+fddev bench
+```
+
+This uses the stock configuration from `default.toml`. On a 32 physical core AMD EPYC 7513, the default configuration reaches around 63,000 TPS.
+
+### Monitoring During Benchmark
+
+While the benchmark is running, you can monitor tile performance in another terminal:
+
+```bash
+fdctl monitor --config ~/config.toml
+```
+
+Look for these indicators:
+
+- **Tiles at 100% finish** - Fully saturated tiles that may be bottlenecks
+- **High `overnp cnt`** - Tiles dropping transactions due to overload
+- **High `% backp`** - Tiles waiting on downstream tiles
+
+## Benchmark Configuration
+
+To achieve higher TPS rates, you need to tune several configuration parameters:
+
+<Tabs>
+  <Tab title="AMD Zen3 32-core">
+    ```toml bench-zen3-32core.toml
+    [ledger]
+      # Place the ledger in memory rather than on disk so that writing the
+      # ledger is not a performance bottleneck
+      path = "/data/shm/{name}/ledger"
+    
+    [layout]
+      # We will need a lot of verify tiles, and a few more bank tiles to be
+      # able to execute at higher TPS rates. Increase their core counts, and
+      # assign the tiles to cores. We only need 1 shred tile, since there is
+      # only 1 node in the cluster it can handle a high TPS rate by itself
+      affinity = "14-57,f1"
+      agave_affinity = "58-63"
+      verify_tile_count = 30
+      bank_tile_count = 6
+      shred_tile_count = 1
+    
+    [development.genesis]
+      # The default amount of accounts to use for the benchmark is 1024, but
+      # to reach higher transaction throughput we need more accounts so that
+      # more transfers can be handled in parallel
+      fund_initial_accounts = 32768
+    
+    [development.bench]
+      # benchg tiles are used to generate and sign transactions in the
+      # benchmarking tool, we are going to need more of them to test higher
+      # TPS rate
+      benchg_tile_count = 12
+    
+      # benchs tiles are for sending the transactions to Firedancer over
+      # loopback, and we will need an extra one of these as well
+      benchs_tile_count = 2
+    
+      # Assign these benchg, benchs (and the bencho tile which orchestrates
+      # the benchmarking) to some CPU cores. The bencho assignment is
+      # floating as it is not performance sensitive
+      affinity = "f1,0-13"
+    
+      # The Solana protocol consensus limits restrict the benchmark to
+      # around 81,000 TPS. We have special options to increase these limits
+      # for testing and benchmarking
+      larger_max_cost_per_block = true
+      larger_shred_limits_per_block = true
+    
+    [rpc]
+      # Tracking certain transaction history and metadata to serve RPC
+      # requests is expensive and can slow down our validator, turn this
+      # functionality off
+      transaction_history = false
+      extended_tx_metadata_storage = false
+    ```
+  </Tab>
+  
+  <Tab title="AMD Zen4 64-core">
+    ```toml bench-zen4-64core.toml
+    scratch_directory = "/dev/shm/fd1"
+    
+    [layout]
+      verify_tile_count = 42
+      bank_tile_count = 20
+      shred_tile_count = 1
+    
+    [development.genesis]
+      fund_initial_accounts = 10000
+      hashes_per_tick = 12_500
+    
+    [development.bench]
+      benchg_tile_count = 18
+      benchs_tile_count = 3
+      larger_max_cost_per_block = true
+      larger_shred_limits_per_block = true
+      disable_blockstore_from_slot = 1
+      disable_status_cache = true
+    
+    [rpc]
+      transaction_history = false
+      extended_tx_metadata_storage = false
+    
+    [tiles.pack]
+      use_consumed_cus = false
+    ```
+  </Tab>
+  
+  <Tab title="Intel Icelake 80-core">
+    ```toml bench-icelake-80core.toml
+    dynamic_port_range = "8100-8200"
+    scratch_directory = "/dev/shm/fd1"
+    
+    [layout]
+      affinity = "28-78/2,1-69/2"
+      agave_affinity = "71-79/2"
+      verify_tile_count = 33
+      bank_tile_count = 19
+      shred_tile_count = 1
+    
+    [development.genesis]
+      fund_initial_accounts = 10000
+    
+    [development.bench]
+      benchg_tile_count = 12
+      benchs_tile_count = 2
+      affinity = "f1,0-26/2"
+      larger_max_cost_per_block = true
+      larger_shred_limits_per_block = true
+      disable_blockstore_from_slot = 1
+    
+    [rpc]
+      transaction_history = false
+      extended_tx_metadata_storage = false
+    
+    [tiles.shred]
+      max_pending_shred_sets = 16384
+    ```
+  </Tab>
+</Tabs>
+
+## Key Configuration Parameters
+
+### Genesis Configuration
+
+- **`fund_initial_accounts`** - More accounts allow more parallel transfers. Use 10,000-32,768 for high TPS testing.
+- **`hashes_per_tick`** - Adjust PoH speed for faster block production in testing.
+
+### Benchmark-Specific Settings
+
+- **`benchg_tile_count`** - Number of tiles generating and signing transactions
+- **`benchs_tile_count`** - Number of tiles sending transactions over QUIC
+- **`larger_max_cost_per_block`** - Increases block size limits for testing
+- **`larger_shred_limits_per_block`** - Increases shred limits for testing
+- **`disable_blockstore_from_slot`** - Disables blockstore writes to show pure Firedancer performance
+
+<Warning>
+The `disable_blockstore_from_slot` option should only be used for benchmarking. Do not use this in production as it prevents storing block data to disk.
+</Warning>
+
+## Running with Custom Configuration
+
+Run the benchmark with your custom configuration:
+
+```bash
+fddev bench --config bench-zen3-32core.toml
+```
+
+## Interpreting Results
+
+### Example Output
+
+```bash
+$ fddev bench --config bench-zen3-32core.toml
+[2024-06-25 17:32:25] TPS: 0
+[2024-06-25 17:32:26] TPS: 45123
+[2024-06-25 17:32:27] TPS: 89456
+[2024-06-25 17:32:28] TPS: 156789
+[2024-06-25 17:32:29] TPS: 234567
+[2024-06-25 17:32:30] TPS: 287654
+```
+
+### Common Bottlenecks
+
+<Tabs>
+  <Tab title="Verify Tiles Saturated">
+    **Symptoms:**
+    - All verify tiles at 100% finish
+    - High `overnp cnt` on verify tiles
+    - TPS plateaus below expected
+    
+    **Solution:**
+    Increase `verify_tile_count` and adjust affinity to provide more CPU cores for verification.
+  </Tab>
+  
+  <Tab title="Blockstore Backpressure">
+    **Symptoms:**
+    - Blockstore at 99%+ finish
+    - PoH and shred tiles showing high `% backp`
+    - TPS drops after initial burst
+    
+    **Solution:**
+    For benchmarking only, use `disable_blockstore_from_slot = 1` to bypass the blockstore. For production, this indicates disk I/O limitations.
+  </Tab>
+  
+  <Tab title="Bank Tiles Saturated">
+    **Symptoms:**
+    - All bank tiles at 100% finish
+    - Pack tile showing backpressure
+    - TPS plateaus during execution
+    
+    **Solution:**
+    Increase `bank_tile_count`, though note that bank tiles have diminishing returns due to lock contention.
+  </Tab>
+</Tabs>
+
+## Expected Performance
+
+Typical benchmark results on different hardware:
+
+| Hardware | Configuration | Expected TPS |
+|----------|---------------|-------------|
+| AMD EPYC 7513 (32 cores) | Default | ~63,000 |
+| AMD EPYC 7513 (32 cores) | Tuned | ~250,000+ |
+| AMD EPYC 9554P (64 cores) | Tuned | ~400,000+ |
+| Intel Icelake (80 cores) | Tuned | ~500,000+ |
+
+<Note>
+These are synthetic benchmarks with non-conflicting transactions. Real-world mainnet performance is limited by consensus rules to around 81,000 TPS.
+</Note>
+
+## Benchmarking Best Practices
+
+1. **Use dedicated hardware** - Close other applications to avoid interference
+2. **Monitor tile metrics** - Use `fdctl monitor` to identify bottlenecks
+3. **Test incrementally** - Adjust one parameter at a time
+4. **Verify core assignment** - Check that affinity strings don't overlap
+5. **Use in-memory storage** - Set ledger path to `/dev/shm` for benchmarking
+6. **Disable unnecessary features** - Turn off RPC history and metadata
+7. **Increase account count** - More accounts reduce transaction conflicts
+
+## Troubleshooting
+
+### Benchmark Won't Start
+
+- Verify `fddev` binary is built: `make -j fddev`
+- Check configuration file syntax is valid TOML
+- Ensure sufficient CPU cores for both validator and benchmark tiles
+
+### Low TPS Results
+
+- Check for tile saturation with `fdctl monitor`
+- Verify no affinity overlap between validator and Agave
+- Increase verify tile count (most common bottleneck)
+- Ensure ledger is in memory (`/dev/shm`)
+
+### TPS Drops Over Time
+
+- Usually indicates blockstore backpressure
+- Use `disable_blockstore_from_slot = 1` for pure benchmarking
+- Check disk I/O performance if testing production configuration
+
+## Next Steps
+
+After benchmarking:
+
+1. Identify your optimal tile configuration
+2. Apply learnings to your production configuration
+3. Continue monitoring with `fdctl monitor` and [Prometheus metrics](/api/metrics)
+4. See [Performance Tuning](/performance/tuning) for production optimization strategies

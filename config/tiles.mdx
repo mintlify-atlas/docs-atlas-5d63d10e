@@ -1,0 +1,228 @@
+---
+title: Tile Configuration
+description: Configure Firedancer tiles for transaction processing and networking
+---
+
+Firedancer uses a tile-based architecture where each tile runs on a dedicated CPU core and performs a specific task. The `[tiles]` section configures individual tile behavior, while `[layout]` controls how many of each tile to run and their CPU affinity.
+
+## Layout Configuration
+
+The `[layout]` section controls CPU core assignment and tile counts.
+
+<ParamField path="layout.affinity" type="string" default="auto">
+  Logical CPU cores to run Firedancer tiles on. Can be specified as:
+  - A single core: `"0"`
+  - A range: `"0-10"`
+  - A range with stride: `"0-10/2"` (useful for hyperthreading)
+  - Floating cores: `"f5"` (next 5 tiles float on original core set)
+  
+  If set to `"auto"`, Firedancer will attempt to determine the best layout for the system. When using auto, `agave_affinity` must also be set to auto.
+</ParamField>
+
+<ParamField path="layout.agave_affinity" type="string" default="auto">
+  Logical CPU cores the Agave subprocess and all of its threads are allowed to run on. Specified in the same format as the Firedancer affinity.
+  
+  **Important:** Do not overlap Firedancer affinity with Agave affinity, as Firedancer tiles expect exclusive use of their core.
+</ParamField>
+
+<ParamField path="layout.blocklist_cores" type="string" default="0h">
+  Logical CPU cores to blocklist from being used by Firedancer when using auto affinity. Cores can be specified with an 'h' suffix to indicate both the core and its hyperthread sibling should be blocklisted.
+  
+  By default, core 0 and its hyperthread sibling are blocklisted to prevent interference with OS kernel threads.
+</ParamField>
+
+<Warning>
+Each tile needs a dedicated CPU core and it will be saturated at 100% utilization. The Agave process will run on the cores under `agave_affinity` and this should not overlap with tile cores.
+</Warning>
+
+### Tile Counts
+
+<ParamField path="layout.net_tile_count" type="integer" default="1">
+  How many net tiles to run. Should be set to 1. Net tiles send and receive packets from the network device.
+</ParamField>
+
+<ParamField path="layout.quic_tile_count" type="integer" default="1">
+  How many QUIC tiles to run. Should be set to 1 for current mainnet conditions. QUIC tiles parse incoming QUIC protocol messages and manage connections.
+</ParamField>
+
+<ParamField path="layout.verify_tile_count" type="integer" default="6">
+  How many verify tiles to run. Verify tiles perform signature verification on incoming transactions. On modern hardware, each verify tile can handle around 20-40K transactions per second. Six tiles seems to be enough for current mainnet traffic.
+  
+  Verify tiles scale linearly - increase this count until the validator is not dropping incoming transactions.
+</ParamField>
+
+<ParamField path="layout.bank_tile_count" type="integer" default="4">
+  How many bank tiles to run. Should be set to 4 for perf and balanced scheduling modes. Bank tiles execute transactions. Because of consensus limits (~32K transactions per block), there is typically no need to use more than 4 on mainnet.
+  
+  **Note:** Bank tiles do not scale linearly due to locks and concurrent data structures in the Agave runtime.
+</ParamField>
+
+<ParamField path="layout.shred_tile_count" type="integer" default="1">
+  How many shred tiles to run. Should be set to 1 for mainnet, 2 for testnet. Shred tiles distribute block data to the network when leader, and receive/retransmit when not leader.
+</ParamField>
+
+<ParamField path="layout.resolh_tile_count" type="integer" default="1">
+  How many resolver tiles to run. Should be set to 1. Resolver tiles resolve address lookup tables before transactions are scheduled.
+</ParamField>
+
+## QUIC Tile Configuration
+
+<ParamField path="tiles.quic.regular_transaction_listen_port" type="integer" default="9001">
+  Which port to listen on for incoming regular UDP transactions that are not over QUIC. These could be votes, user transactions, or transactions forwarded from another validator.
+</ParamField>
+
+<ParamField path="tiles.quic.quic_transaction_listen_port" type="integer" default="9007">
+  Which port to listen on for incoming QUIC transactions. Currently this must be exactly 6 more than the regular_transaction_listen_port.
+</ParamField>
+
+<ParamField path="tiles.quic.max_concurrent_connections" type="integer" default="131072">
+  Maximum number of simultaneous QUIC connections which can be open. New connections which would exceed this limit will not be accepted. Must be >= 2 and a power of 2.
+</ParamField>
+
+<ParamField path="tiles.quic.idle_timeout_millis" type="integer" default="10000">
+  QUIC connection idle timeout. An idle connection will be terminated if it remains idle longer than this threshold.
+</ParamField>
+
+<ParamField path="tiles.quic.retry" type="boolean" default="true">
+  QUIC retry is a feature to combat new connection request spamming. Determines whether this feature is enabled.
+</ParamField>
+
+## Pack Tile Configuration
+
+The pack tile orders incoming transactions to generate the most fees per compute resource.
+
+<ParamField path="tiles.pack.max_pending_transactions" type="integer" default="65524">
+  Maximum number of transactions that will be stored before those with the lowest estimated profitability get dropped. The maximum allowed and default value is 65524. Not recommended to change.
+</ParamField>
+
+<ParamField path="tiles.pack.use_consumed_cus" type="boolean" default="true">
+  When a transaction consumes fewer CUs than it requests, the bank and pack tiles work together to adjust block limits so a different transaction can consume the unspent CUs. This typically leads to producing blocks with more transactions.
+</ParamField>
+
+<ParamField path="tiles.pack.schedule_strategy" type="string" default="balanced">
+  The pack tile scheduling strategy with different tradeoffs.
+  
+  **Options:**
+  - `"perf"`: Fill the block as fast as possible using the highest-paying transactions. Results in consistently 100% full blocks. Use default 4 bank tiles.
+  - `"balanced"` (default): Fill the block at a rate just fast enough to fill it by the end. Optimizes for revenue from priority fees. Use default 4 bank tiles.
+  - `"revenue"`: Fill blocks extremely lazily, saving most work for the end. Results in high MEV revenue but regularly unfull blocks. Use high number of bank tiles (10-20). **WARNING: Deprecated and will be removed.**
+</ParamField>
+
+## Shred Tile Configuration
+
+<ParamField path="tiles.shred.shred_listen_port" type="integer" default="8003">
+  The port to listen on for shreds to forward. This port is broadcast over gossip so other validators know how to reach this one.
+</ParamField>
+
+<ParamField path="tiles.shred.additional_shred_destinations_retransmit" type="array" default="[]">
+  Additional destinations to forward received shreds. Each new, valid shred that the validator receives will be forwarded to these addresses. Format: `["ip:port", ...]`
+</ParamField>
+
+<ParamField path="tiles.shred.additional_shred_destinations_leader" type="array" default="[]">
+  Additional destinations for shreds produced when leader. Each shred that the validator produces when it is leader will be sent to these addresses. Format: `["ip:port", ...]`
+</ParamField>
+
+## GUI Configuration
+
+<ParamField path="tiles.gui.enabled" type="boolean" default="true">
+  If the GUI is enabled. Firedancer has a GUI that can provide useful information about the validator.
+</ParamField>
+
+<ParamField path="tiles.gui.gui_listen_address" type="string" default="127.0.0.1">
+  The address to listen on. By default, the GUI is only accessible from the local machine.
+</ParamField>
+
+<ParamField path="tiles.gui.gui_listen_port" type="integer" default="80">
+  The port to listen on for GUI HTTP connections.
+</ParamField>
+
+<Note>
+By default the GUI listens on `127.0.0.1:80`. You can configure this using `gui_listen_address` and `gui_listen_port` options.
+</Note>
+
+## Metric Tile Configuration
+
+<ParamField path="tiles.metric.prometheus_listen_address" type="string" default="127.0.0.1">
+  The address to listen on for Prometheus metrics. By default, metrics are only accessible from the local machine.
+</ParamField>
+
+<ParamField path="tiles.metric.prometheus_listen_port" type="integer" default="7999">
+  The port to listen on for HTTP requests for Prometheus metrics. Firedancer serves metrics at a URI like `127.0.0.1:7999/metrics`
+</ParamField>
+
+## Configuration Examples
+
+<CodeGroup>
+```toml Auto Layout
+[layout]
+    # Let Firedancer determine optimal layout
+    affinity = "auto"
+    agave_affinity = "auto"
+    blocklist_cores = "0h"
+    
+    # Default tile counts for mainnet
+    net_tile_count = 1
+    quic_tile_count = 1
+    verify_tile_count = 6
+    bank_tile_count = 4
+    shred_tile_count = 1
+```
+
+```toml Manual Layout (32-core system)
+[layout]
+    # Firedancer tiles on cores 1-18
+    affinity = "1-18"
+    
+    # Agave on cores 19-31
+    agave_affinity = "19-31"
+    
+    # Tile counts
+    net_tile_count = 1
+    quic_tile_count = 1
+    verify_tile_count = 4
+    bank_tile_count = 4
+    shred_tile_count = 1
+```
+
+```toml High-Performance Configuration
+[layout]
+    affinity = "1-24"
+    agave_affinity = "25-63"
+    
+    # More verify tiles for high throughput
+    verify_tile_count = 8
+    bank_tile_count = 4
+
+[tiles.pack]
+    schedule_strategy = "perf"
+    use_consumed_cus = true
+
+[tiles.gui]
+    enabled = true
+    gui_listen_address = "0.0.0.0"
+    gui_listen_port = 8080
+```
+
+```toml QUIC Configuration
+[tiles.quic]
+    regular_transaction_listen_port = 9001
+    quic_transaction_listen_port = 9007
+    max_concurrent_connections = 131072
+    idle_timeout_millis = 10000
+    retry = true
+```
+</CodeGroup>
+
+## Tile Pipeline
+
+Transactions flow through Firedancer in a linear pipeline:
+
+```
+net → quic → verify → dedup → pack → bank → poh → shred → store
+```
+
+Some tiles (net, quic, verify, bank, shred) can be parallelized to run on multiple CPU cores for better performance.
+
+<Note>
+It is suggested to run as many tiles as possible and tune the tile counts for maximum system throughput so that the Solana network can run faster. There are example tuned configurations in the `src/app/fdctl/config/` folder.
+</Note>

@@ -1,0 +1,209 @@
+---
+title: Metrics API
+description: Prometheus metrics endpoint for monitoring Firedancer performance counters and internal statistics
+---
+
+## Overview
+
+Firedancer maintains many internal performance counters for use by developers and monitoring tools, and exposes them via a [Prometheus](https://prometheus.io/docs/introduction/overview/) HTTP endpoint.
+
+### Configuration
+
+Configure the Prometheus metrics endpoint in your `config.toml`:
+
+```toml config.toml
+[tiles.metric]
+    prometheus_listen_port = 7999
+```
+
+### Accessing Metrics
+
+Once configured, you can query the metrics endpoint using curl or any Prometheus-compatible scraper:
+
+```bash
+curl http://localhost:7999/metrics
+```
+
+**Example Response:**
+
+```
+# HELP tile_pid The process ID of the tile.
+# TYPE tile_pid gauge
+tile_pid{kind="net",kind_id="0"} 1527373
+tile_pid{kind="quic",kind_id="0"} 1527370
+tile_pid{kind="quic",kind_id="1"} 1527371
+tile_pid{kind="verify",kind_id="0"} 1527369
+tile_pid{kind="verify",kind_id="1"} 1527374
+tile_pid{kind="dedup",kind_id="0"} 1527365
+...
+```
+
+<Note>
+Metrics are currently only provided for developer and diagnostic use. The endpoint or data provided may break or change in incompatible ways at any time.
+</Note>
+
+## Metric Types
+
+Firedancer reports three metric types following the [Prometheus data model](https://prometheus.io/docs/concepts/metric_types/):
+
+<ResponseField name="counter" type="metric type">
+A cumulative metric representing a monotonically increasing counter.
+</ResponseField>
+
+<ResponseField name="gauge" type="metric type">
+A single numerical value that can go arbitrarily up or down.
+</ResponseField>
+
+<ResponseField name="histogram" type="metric type">
+Samples observations like packet sizes and counts them in buckets.
+</ResponseField>
+
+## Available Metrics
+
+### Link Metrics
+
+Metrics for all inter-tile communication links:
+
+<ResponseField name="link_consumed_count" type="counter">
+The number of times the link reader has consumed a fragment.
+</ResponseField>
+
+<ResponseField name="link_consumed_size_bytes" type="counter">
+The total number of bytes read by the link consumer.
+</ResponseField>
+
+<ResponseField name="link_filtered_count" type="counter">
+The number of fragments that were filtered and not consumed.
+</ResponseField>
+
+<ResponseField name="link_filtered_size_bytes" type="counter">
+The total number of bytes read by the link consumer that were filtered.
+</ResponseField>
+
+<ResponseField name="link_overrun_polling_count" type="counter">
+The number of times the link has been overrun while polling.
+</ResponseField>
+
+<ResponseField name="link_overrun_reading_count" type="counter">
+The number of input overruns detected while reading metadata by the consumer.
+</ResponseField>
+
+<ResponseField name="link_slow_count" type="counter">
+The number of times the consumer was detected as rate limiting by the producer.
+</ResponseField>
+
+### Tile Metrics
+
+Metrics available for all tiles:
+
+<ResponseField name="tile_pid" type="gauge">
+The process ID of the tile.
+</ResponseField>
+
+<ResponseField name="tile_tid" type="gauge">
+The thread ID of the tile. Always the same as the PID in production, but might be different in development.
+</ResponseField>
+
+<ResponseField name="tile_last_cpu" type="gauge">
+Index of the CPU last executed on.
+</ResponseField>
+
+<ResponseField name="tile_context_switch_involuntary_count" type="counter">
+The number of involuntary context switches.
+</ResponseField>
+
+<ResponseField name="tile_context_switch_voluntary_count" type="counter">
+The number of voluntary context switches.
+</ResponseField>
+
+<ResponseField name="tile_page_fault_major_count" type="counter">
+The number of major page faults.
+</ResponseField>
+
+<ResponseField name="tile_page_fault_minor_count" type="counter">
+The number of minor page faults.
+</ResponseField>
+
+<ResponseField name="tile_status" type="gauge">
+The current status of the tile: 0 is booting, 1 is running, 2 is shutdown.
+</ResponseField>
+
+<ResponseField name="tile_heartbeat" type="gauge">
+The last UNIX timestamp in nanoseconds that the tile heartbeated.
+</ResponseField>
+
+<ResponseField name="tile_in_backpressure" type="gauge">
+Whether the tile is currently backpressured or not, either 1 or 0.
+</ResponseField>
+
+<ResponseField name="tile_backpressure_count" type="counter">
+Number of times the tile has had to wait for one or more consumers to catch up to resume publishing.
+</ResponseField>
+
+### Tile-Specific Metrics
+
+#### IPEcho Tile
+
+<ResponseField name="ipecho_current_shred_version" type="gauge">
+The current shred version used by the validator.
+</ResponseField>
+
+<ResponseField name="ipecho_connection_count" type="gauge">
+The number of active connections to the ipecho service.
+</ResponseField>
+
+<ResponseField name="ipecho_connections_closed_ok" type="counter">
+The number of connections that have been made and closed normally.
+</ResponseField>
+
+<ResponseField name="ipecho_connections_closed_error" type="counter">
+The number of connections that have been made and closed abnormally.
+</ResponseField>
+
+#### Snapshot Control Tile
+
+<ResponseField name="snapct_state" type="gauge">
+State of the snapshot control tile.
+</ResponseField>
+
+<ResponseField name="snapct_full_bytes_read" type="gauge">
+Number of bytes read so far from the full snapshot. Might decrease if snapshot load is aborted and restarted.
+</ResponseField>
+
+<ResponseField name="snapct_full_bytes_total" type="gauge">
+Total size of the full snapshot file.
+</ResponseField>
+
+<ResponseField name="snapct_incremental_bytes_read" type="gauge">
+Number of bytes read so far from the incremental snapshot.
+</ResponseField>
+
+<ResponseField name="snapct_predicted_slot" type="gauge">
+The predicted slot from which replay starts after snapshot loading finishes.
+</ResponseField>
+
+## Integration with Monitoring Tools
+
+### Prometheus
+
+Add Firedancer as a scrape target in your `prometheus.yml`:
+
+```yaml prometheus.yml
+scrape_configs:
+  - job_name: 'firedancer'
+    static_configs:
+      - targets: ['localhost:7999']
+```
+
+### Grafana
+
+Once metrics are being scraped by Prometheus, you can create Grafana dashboards to visualize:
+
+- Tile health and backpressure
+- Link throughput and overruns
+- Context switches and page faults
+- Snapshot loading progress
+
+<Note>
+For a complete list of all available metrics including tile-specific counters for net, quic, verify, dedup, pack, bank, poh, shred, store, sign, and other tiles, refer to the full metrics output from your running validator.
+</Note>

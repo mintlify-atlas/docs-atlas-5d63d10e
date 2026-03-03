@@ -1,0 +1,291 @@
+---
+title: Net Tile Internals
+description: Deep dive into Firedancer's net tile architecture, AF_XDP integration, and high-performance networking implementation
+---
+
+The net tile provides fast networking to Firedancer by acting as a translation layer between the Internet (IPv4) and the Firedancer messaging subsystem (Tango).
+
+## Overview
+
+Net tiles use Linux AF_XDP APIs for kernel-bypass networking, which:
+- Bypasses large parts of the kernel's routing code
+- Avoids expensive context switches
+- Offloads most data copies to network hardware ("zero copy" I/O)
+
+A net tile never sleeps (busy polling). It consists of a simple event loop that:
+- Passes incoming packets down to app tiles
+- Routes outgoing packets to the right network interface
+- Wakes up the kernel ~20k times per second to do batches of RX and TX
+
+## XDP Modes
+
+### Driver Mode (drv)
+
+**Fast mode** - XDP support implemented in the network device driver before `struct sk_buff` allocation.
+
+- Achieves best performance
+- Not available on all drivers
+- Less stable due to frequent kernel changes
+- Performance target: ~20 million packets per second
+
+### Socket Buffer Mode (skb)
+
+**Fallback mode** - Always supported but slower.
+
+- Uses Linux network stack's `struct sk_buff`
+- Works everywhere
+- Performance penalty compared to driver mode
+
+<Info>
+The performance target for XDP RX is ~20 million packets per second. A proof-of-concept achieved this on an Ivy Bridge CPU with Intel XL710 hardware using XDP drv mode with preferred busy polling and zero copy I/O.
+</Info>
+
+## XDP Lifecycle
+
+### Persistent Configuration
+
+Running `fdctl configure init all` performs NIC configuration that persists across Firedancer restarts but is wiped after reboot:
+
+- Disables problematic ethtool offloads (GRO, UDP segmentation)
+- Configures NIC to steer all Firedancer traffic to a single queue per net tile
+- One XDP socket required per NIC channel
+
+```bash
+$ sudo fdctl configure init all --config config.toml
+```
+
+### Ephemeral Configuration
+
+Running `fdctl run` sets up ephemeral kernel config scoped to the net tile process lifetime:
+
+- Installs an XDP program
+- Deploys various supporting eBPF maps
+- Creates AF_XDP sockets and XDP metadata rings
+- Binds UMEM regions to AF_XDP sockets
+- Creates an rtnetlink socket to monitor for config changes
+
+When Firedancer exits, the kernel automatically undoes this configuration.
+
+## Topology
+
+### TX Links
+
+The net tile is mostly agnostic to the TX topology. It expects standard Tango practices:
+
+- Metadata ring is an mcache
+- "mcache publish marks data freed" pattern (assumes TSO memory model)
+- Data region is a dcache
+- Chunk addressing with base
+
+The net tile exports flow control information (fseq, fctl) allowing app tiles to be configured for backpressuring TX.
+
+### RX Links
+
+RX links are inherently unreliable (don't backpressure). Each app tile should be able to sift through packets at line rate.
+
+For each combination of (net tile, app tile kind) there is one RX mcache.
+
+**Example topology:**
+- 2 net tiles
+- 3 quic tiles  
+- 1 shred tile
+
+**RX links created:**
+- `net:0` → `quic`
+- `net:0` → `shred`
+- `net:1` → `quic`
+- `net:1` → `shred`
+
+There is one UMEM dcache object per net tile. All RX mcaches of each net tile share that same dcache.
+
+### UMEM Region
+
+A "UMEM" region is XDP packet buffer memory. In Firedancer:
+- 4K aligned memory region
+- Subdivided into 2048 byte frames
+- Each frame carries one Ethernet packet
+
+Each net tile manages a UMEM region allocated via a dcache object, bound to one or more XDP sockets.
+
+The UMEM region is shared throughout the system and accessible to:
+- Firedancer app tiles (read-only)
+- Firedancer net tiles (read-write)
+- The Linux kernel (read-write)
+- PCIe network devices (read-write via IOMMU)
+
+<Note>
+With the right XDP flags (`XDP_FLAGS_DRV_MODE` and `XDP_ZEROCOPY`), this allows for true "zero copy I/O" where PCIe network devices can copy incoming Ethernet packets all the way to application tiles without software copies along the way.
+</Note>
+
+## RX Lifecycle
+
+The RX lifecycle involves three steps, with the net tile tracking buffer state in three rings:
+
+```
+    ┌──────┐     ┌──────┐
+    │ FILL ┼─────►  RX  │
+    └─▲────┘     └────┬─┘
+      │               │
+      │  ┌────────┐   │
+      │  │ MCACHE │   │
+      ├──┼  QUIC  ◄───┤
+      │  └────────┘   │
+      │               │
+      │  ┌────────┐   │
+      │  │ MCACHE │   │
+      └──┼ SHRED  ◄───┘
+         └────────┘
+```
+
+### 1. FILL Ring
+
+Gives free packet buffers to the kernel for the NIC to fill.
+
+- One FILL ring per XDP socket
+- Consists of 64-bit aligned pointers relative to UMEM start
+- Allocated by kernel, read-write mapped to userspace
+- If empty, incoming packets get dropped
+
+### 2. RX Ring
+
+Kernel publishes XDP descriptors of newly arrived packets.
+
+- One RX ring per XDP socket
+- Contains `struct xdp_desc` entries
+- Net tile consumes descriptors and either:
+  - Frees buffer immediately (returns to FILL ring)
+  - Forwards to mcache ring
+
+### 3. MCACHE Ring
+
+Makes packets visible to app tiles while simultaneously freeing old buffers.
+
+- One mcache ring per downstream tile interested in traffic
+- Number of UMEM buffers in 'MCACHE' state equals depths of all mcache RX rings
+- RX mcache ring does not backpressure (too slow app tiles get overridden)
+- Net tile produces Tango descriptors (`fd_frag_meta_t`) to mcache
+
+#### Frag Metadata Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `seq` | `u64` | Local sequence number |
+| `sig` | `u64` | Compressed `netmux_sig` fields |
+| `chunk` | `u32` | wksp offset right shifted by 6 bits |
+| `sz` | `u16` | Packet size including Ethernet header |
+| `ctl` | `u16` | Low 6 bits of wksp offset |
+| `tsorig` | `u32` | Unused |
+| `tspub` | `u32` | Unused |
+
+<CodeGroup>
+```c Reconstructing Packet Address
+static inline void const *
+rx_pkt_laddr( void * base,
+              ulong  chunk,
+              ulong  ctl ) {
+  return (void *)( (ulong)base + (chunk<<6) + ctl );
+}
+```
+</CodeGroup>
+
+## TX Lifecycle
+
+The TX lifecycle involves three steps:
+
+```
+┌──────┐      ┌──────┐
+│ FREE ┼──────►  TX  │
+└─▲────┘      └────┬─┘
+  │                │
+  │ ┌────────────┐ │
+  └─┼ COMPLETION ◄─┘
+    └────────────┘
+```
+
+### 1. MCACHE Rings (TX)
+
+App tiles instruct net tiles to send packets via mcache TX rings.
+- All net tiles listen for new outgoing packets on all TX mcaches
+- Take turns according to packet's load balancing hash
+
+### 2. FREE, TX Rings
+
+Once net tile finds a packet to send:
+- Allocates UMEM TX frame from tx_free ring
+- Copies packet payload into frame
+- Enters frame into TX ring
+
+### 3. Completion Ring
+
+Once kernel finishes processing the TX frame:
+- Moves it to completion ring
+- Net tile moves completed frames back to free ring
+
+## Loopback
+
+The first net tile (`net:0`) sets up XDP on the loopback device for:
+- Testing and development
+- Local traffic that Agave sends to itself (e.g., leader votes to own TPU socket)
+
+The Linux kernel routes outgoing packets addressed to local IP addresses via loopback. The net tile matches this behavior using a second XDP socket.
+
+<Info>
+The loopback device only supports XDP in SKB mode.
+</Info>
+
+## Security Protections
+
+Net tile and network-facing app tiles are heavily sandboxed:
+- seccomp system call filtering
+- User namespaces
+- Dropped capabilities
+
+**Memory protection:**
+- UMEM regions and RX mcaches: mapped read-only to app tiles
+- Prevents malicious app tile from corrupting unrelated traffic
+- Allows app tile to eavesdrop on any incoming packets
+
+**TX protection:**
+- Net tile read-only maps TX mcaches and dcaches from app tiles
+- Each app tile can only access its own TX link
+- Net tile speculatively copies TX packets but checks for overruns
+
+<Note>
+Completely isolating control plane traffic from Firedancer requires separate physical network interfaces.
+</Note>
+
+## Known Limitations
+
+Firedancer v0.4 net tile limitations:
+
+- No IPv6 support (practically all Solana traffic uses IPv4 as of Feb 2025)
+- Does not yet use `SO_PREFERRED_BUSY_POLL`
+- Supports only one external network interface (plus loopback)
+- fdctl does not yet configure IRQ affinity or disable NIC interrupts
+- Cannot share network interface with other AF_XDP apps
+- Only supports simple route tables
+- Performance detriment to other apps using Linux networking on shared interfaces
+- RX mcaches scale as O(n*m) where n=net tiles, m=app tiles (could be O(max(n,m)))
+
+## Development Tools
+
+### fddev pktgen
+
+Benchmark tool for testing net tile TX path:
+
+```bash
+$ fddev pktgen
+```
+
+Floods an Ethernet neighbor with small packets:
+- Runs single net tile + special pktgen tile
+- Generates ~10 million 64-byte Ethernet frames per second
+- Packets are not routable (cannot harm IP networks)
+
+If no packets are sent, the netlnk tile likely couldn't resolve the Ethernet neighbor. Add a fake neighbor:
+
+```bash
+ip neigh add FAKE_DST_IP dev DEVICE lladdr 00:00:00:00:00:00
+```
+
+Where `FAKE_DST_IP` is configured in `[development.pktgen.fake_dst_ip]` and `DEVICE` is your Linux network device name.

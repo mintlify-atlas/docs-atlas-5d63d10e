@@ -1,0 +1,305 @@
+---
+title: Running the Validator
+description: Initialize system requirements and run your Firedancer validator
+---
+
+Once you've built Firedancer and created your configuration file, you're ready to initialize your system and run the validator.
+
+## Two-User Model
+
+Firedancer uses a two-user security model:
+
+<Steps>
+  <Step title="Startup User (Privileged)">
+    The user that launches `fdctl` — typically `root` or a user with specific capabilities:
+    
+    - Needs privileges to set up kernel bypass networking
+    - Required for `fdctl run` and `fdctl configure` commands
+    - Should be `root` for simplicity
+  </Step>
+
+  <Step title="Runtime User (Unprivileged)">
+    The user specified in your `config.toml` file:
+    
+    - Firedancer switches to this user after privileged initialization
+    - Should be minimally permissioned
+    - Should **never** be `root` or have `sudo` access
+    - Runs in a highly restrictive sandbox
+  </Step>
+</Steps>
+
+<Warning>
+For security, the runtime user should be as minimally permissioned as possible and separate from other system processes.
+</Warning>
+
+## System Initialization
+
+Before running Firedancer for the first time, you must initialize system requirements.
+
+<Warning>
+Running `fdctl configure` commands may make permanent changes to your system. Be careful before running these commands on a production host.
+</Warning>
+
+### Initialize All Requirements
+
+```bash
+sudo ./build/native/gcc/bin/fdctl configure init all --config ~/config.toml
+```
+
+This command will:
+
+- Enable required Linux kernel features
+- Configure huge pages
+- Set up networking capabilities
+- Configure system limits
+- Create necessary directories with proper permissions
+
+<Note>
+You will be shown what steps are performed. It is strongly recommended to run the `configure` command when the system boots, as it needs to be run each time the system is rebooted.
+</Note>
+
+### Advanced: Check Required Capabilities
+
+To see which capabilities are required without being root:
+
+```bash
+./build/native/gcc/bin/fdctl run --config ~/config.toml
+```
+
+If you lack privileges, Firedancer will display the required capabilities.
+
+<Tip>
+For security reasons, it's not recommended to use `setcap(8)` on the `fdctl` binary, as this can create a larger attack surface. Simply run as root instead.
+</Tip>
+
+## Starting the Validator
+
+Once initialization is complete, start Firedancer:
+
+```bash
+sudo ./build/native/gcc/bin/fdctl run --config ~/config.toml
+```
+
+### What Happens at Startup
+
+<Steps>
+  <Step title="Privileged initialization">
+    Firedancer starts as root and configures kernel bypass networking
+  </Step>
+
+  <Step title="Process spawning">
+    Launches a complete process tree with separate processes for each tile (security isolation)
+  </Step>
+
+  <Step title="Privilege drop">
+    Switches to the configured unprivileged user and enters sandbox
+  </Step>
+
+  <Step title="Validator startup">
+    Begins syncing with the cluster and processing transactions
+  </Step>
+</Steps>
+
+### Process Architecture
+
+Firedancer runs as a multi-process application. You can view the process tree:
+
+```bash
+pstree $(pgrep -f "fdctl run") -as
+```
+
+Example output:
+
+```
+systemd
+  └─sudo ./build/native/gcc/bin/fdctl run --config ~/config.toml
+      └─fdctl run --config ~/config.toml
+          └─fdctl run --config ~/config.toml
+              ├─fdctl run-agave --config-fd 0
+              │   └─35*[{fdctl}]
+              ├─diag:0 run1 diag 0 --pipe-fd 20 --config-fd 0
+              ├─dedup:0 run1 dedup 0 --pipe-fd 15 --config-fd 0
+              ├─gui:0 run1 gui 0 --pipe-fd 22 --config-fd 0
+              ├─metric:0 run1 metric 0 --pipe-fd 19 --config-fd 0
+              ├─net:0 run1 net 0 --pipe-fd 7 --config-fd 0
+              ├─pack:0 run1 pack 0 --pipe-fd 16 --config-fd 0
+              ├─plugin:0 run1 plugin 0 --pipe-fd 21 --config-fd 0
+              ├─quic:0 run1 quic 0 --pipe-fd 8 --config-fd 0
+              ├─shred:0 run1 shred 0 --pipe-fd 17 --config-fd 0
+              ├─sign:0 run1 sign 0 --pipe-fd 18 --config-fd 0
+              ├─verify:0 run1 verify 0 --pipe-fd 9 --config-fd 0
+              ├─verify:1 run1 verify 1 --pipe-fd 10 --config-fd 0
+              ├─verify:2 run1 verify 2 --pipe-fd 11 --config-fd 0
+              ├─verify:3 run1 verify 3 --pipe-fd 12 --config-fd 0
+              ├─verify:4 run1 verify 4 --pipe-fd 13 --config-fd 0
+              └─verify:5 run1 verify 5 --pipe-fd 14 --config-fd 0
+```
+
+<Note>
+Each tile runs in a separate process for security isolation. If any process dies or is killed, it will bring all others down with it.
+</Note>
+
+## Logging
+
+Firedancer produces two types of logs:
+
+### Ephemeral Log (stderr)
+
+- Abbreviated output for real-time monitoring
+- Displayed in your terminal
+- Can be colorized for better readability
+
+### Permanent Log (file)
+
+- Detailed log for archival and debugging
+- Written to file (location configured in TOML)
+- More comprehensive than stderr output
+
+### Example Log Entry
+
+**Ephemeral (stderr):**
+```
+NOTICE  01-23 04:56:07.890123 45678 f0 0 src/file.c(901): Validator started
+```
+
+**Permanent (file):**
+```
+NOTICE  2023-01-23 04:56:07.890123456 GMT-06 45678:45678 user:host:f0 app:thread:0 src/file.c(901)[func]: Validator started
+```
+
+## Networking with AF_XDP
+
+Firedancer uses `AF_XDP`, a Linux API for high-performance networking:
+
+- Installs an XDP program on the network interface specified in `[net.interface]` and `lo`
+- Redirects traffic on Firedancer ports via `AF_XDP`
+- Other applications (SSH, HTTP servers) continue to work normally
+- XDP program is automatically unloaded when Firedancer exits
+
+<Warning>
+Packets received and sent via `AF_XDP` will **not** appear under standard network monitoring tools like `tcpdump`.
+</Warning>
+
+### Supported Network Drivers
+
+While `AF_XDP` works with any Ethernet interface, these drivers are well-tested:
+
+- `ixgbe` — Intel X540
+- `i40e` — Intel X710 series
+- `ice` — Intel E800 series
+
+### Required Privileges
+
+`AF_XDP` requires:
+
+- `CAP_SYS_ADMIN` capability
+- `CAP_NET_RAW` capability
+
+This is one reason why Firedancer requires root permissions on Linux.
+
+## Monitoring Your Validator
+
+### GUI Dashboard
+
+Enable the built-in GUI for real-time monitoring:
+
+```toml
+[tiles.gui]
+    enabled = true
+```
+
+By default, the GUI listens on `127.0.0.1:80`. Access it in your browser:
+
+```
+http://127.0.0.1
+```
+
+<Tip>
+You can configure the address and port using `[tiles.gui.gui_listen_address]` and `[tiles.gui.gui_listen_port]` options.
+</Tip>
+
+### Using Solana CLI
+
+If you built the `solana` binary, you can query your validator:
+
+```bash
+# Check validator status
+./build/native/gcc/bin/solana validators
+
+# Get current slot
+./build/native/gcc/bin/solana slot
+
+# Check validator balance
+./build/native/gcc/bin/solana balance
+```
+
+## Stopping the Validator
+
+To gracefully stop Firedancer:
+
+```bash
+sudo pkill fdctl
+```
+
+The parent process will catch the signal and cleanly shut down all child processes.
+
+## Troubleshooting
+
+### Validator Won't Start
+
+1. Ensure you've run `fdctl configure init all`
+2. Verify your configuration file is valid TOML
+3. Check that identity and vote account keypairs exist
+4. Review logs for specific error messages
+
+### Network Connection Issues
+
+1. Verify gossip entrypoints are correct for your cluster
+2. Check firewall rules allow required ports
+3. Ensure network interface specified in config exists
+4. Verify network driver is compatible with `AF_XDP`
+
+### Performance Issues
+
+1. Ensure CPU affinity settings don't overlap
+2. Verify you have sufficient RAM
+3. Check disk I/O performance
+4. Review tile counts and adjust for your hardware
+5. Consider using tuned configurations from `src/app/fdctl/config/`
+
+### Permission Errors
+
+1. Ensure you're running as root or with required capabilities
+2. Verify the runtime user exists and has access to required paths
+3. Check that the runtime user is **not** root
+4. Confirm directory permissions are correct
+
+## Production Considerations
+
+### Running as a Service
+
+For production deployments, consider running Firedancer as a systemd service for automatic restarts and better management.
+
+### Monitoring
+
+- Enable metrics reporting to track validator health
+- Set up alerting for critical errors
+- Monitor logs for warnings and errors
+- Track validator performance metrics
+
+### Security
+
+- Use a dedicated, unprivileged user for runtime
+- Configure firewall rules to restrict access
+- Set `private = true` for RPC if not needed publicly
+- Regularly update to latest stable releases
+- Monitor security advisories
+
+## Next Steps
+
+Your validator is now running! Consider:
+
+- Monitoring validator performance and health
+- Joining the Firedancer community for support
+- Reading advanced configuration guides
+- Setting up automated backups of your keys

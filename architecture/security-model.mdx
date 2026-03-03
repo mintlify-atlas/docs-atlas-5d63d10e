@@ -1,0 +1,422 @@
+---
+title: Security Architecture
+description: Firedancer's security model, sandboxing, and attack mitigation strategies
+---
+
+Firedancer's security architecture is inspired by browser security models, which operate under perpetual attack. The design combines multiple layers of defense to minimize the impact of vulnerabilities.
+
+## Security Principles
+
+Firedancer's security model is built on several key principles:
+
+<CardGroup cols={2}>
+  <Card title="Defense in Depth">
+    Multiple independent security layers ensure that a single vulnerability doesn't compromise the entire system.
+  </Card>
+  <Card title="Least Privilege">
+    Each component runs with the minimum permissions necessary to perform its function.
+  </Card>
+  <Card title="Isolation">
+    Tiles are isolated from each other, limiting the blast radius of any compromise.
+  </Card>
+  <Card title="Client Diversity">
+    As a second validator implementation, Firedancer reduces single-point-of-failure risk for the Solana network.
+  </Card>
+</CardGroup>
+
+## Sandboxing Architecture
+
+Each tile runs in a highly restricted sandbox on Linux platforms.
+
+### seccomp (Secure Computing Mode)
+
+Firedancer uses **seccomp** to restrict system calls:
+
+- Each tile has a custom seccomp profile installed during initialization
+- Profiles contain allow-lists of permitted syscalls
+- Attempting an unauthorized syscall crashes the tile immediately
+- Different tile types have different profiles based on their needs
+
+<Info>
+  If a seccomp violation occurs, Firedancer will crash with a clear error message indicating which syscall was blocked. This is intentional - security violations should fail loudly.
+</Info>
+
+#### Syscall Considerations
+
+When using standard library functions, be aware:
+
+- glibc may use different syscalls than expected
+- Syscall usage can vary between glibc versions
+- Prefer `fd_io` over `stdio.h` for file I/O
+- Always handle `EINTR` correctly
+
+### User Namespaces
+
+Tiles run in isolated user namespaces:
+
+- Provide UID/GID isolation
+- Limit access to system resources
+- Prevent privilege escalation
+
+### Capability Dropping
+
+After initialization, tiles drop all Linux capabilities:
+
+- No privileged operations possible
+- Cannot change security contexts
+- Cannot access protected resources
+
+<Note>
+  The combination of seccomp, user namespaces, and capability dropping means that even if an attacker achieves code execution within a tile, they have extremely limited ability to affect the rest of the system.
+</Note>
+
+## Memory Protection
+
+### Read-Only Mappings
+
+Shared memory regions are mapped read-only to tiles that don't need write access:
+
+- **UMEM regions**: Network packet buffers are read-only to app tiles
+- **RX mcaches**: Incoming message queues are read-only to consumers
+- **TX dcaches**: Net tile has read-only access to outgoing packets
+
+#### Benefits
+
+<CardGroup cols={2}>
+  <Card title="Corruption Prevention">
+    Malicious app tiles cannot corrupt unrelated network traffic.
+  </Card>
+  <Card title="Isolation">
+    Each app tile can only access its own TX link, not others.
+  </Card>
+  <Card title="Speculative Safety">
+    Net tile speculatively copies TX packets but validates for overruns.
+  </Card>
+  <Card title="Eavesdropping Risk">
+    App tiles can see all incoming packets, requiring separate physical NICs for complete control plane isolation.
+  </Card>
+</CardGroup>
+
+<Info>
+  Completely isolating control plane traffic from Firedancer requires using separate physical network interfaces.
+</Info>
+
+### Memory Layout
+
+Workspace memory is carefully organized:
+
+- **Huge pages**: Reduce attack surface by minimizing page table entries
+- **Aligned allocations**: Prevent unaligned access vulnerabilities  
+- **Separate regions**: Code, data, and stacks in different memory regions
+- **Named workspaces**: Standard UNIX permissions control access
+
+## Network Security
+
+### Kernel Bypass Safety
+
+AF_XDP kernel bypass introduces unique security considerations:
+
+#### Packet Filtering
+
+The XDP program filters packets before they reach tiles:
+
+- **Destination validation**: Only packets addressed to Firedancer ports
+- **Protocol filtering**: Drop unexpected protocols
+- **Rate limiting**: Protect against flood attacks
+
+#### UMEM Protection
+
+The shared UMEM (packet buffer) region is protected:
+
+- PCIe devices write via IOMMU
+- Kernel validates buffer ownership
+- App tiles get read-only access
+- Net tiles enforce buffer lifecycle
+
+### DoS Mitigation
+
+Firedancer includes several DoS protection mechanisms:
+
+<CardGroup cols={2}>
+  <Card title="QUIC Connection Limits">
+    Limit simultaneous QUIC connections per source IP.
+  </Card>
+  <Card title="Rate Limiting">
+    Enforce transaction rate limits per connection.
+  </Card>
+  <Card title="Early Filtering">
+    Drop invalid packets at the net tile before expensive processing.
+  </Card>
+  <Card title="Signature Batching">
+    Batch signature verification to handle spikes efficiently.
+  </Card>
+</CardGroup>
+
+### Transaction Deduplication
+
+The dedup tile prevents duplicate transaction attacks:
+
+- Uses cryptographically secure hashes from signature verification
+- No additional computation required
+- Tag-based parallelization for horizontal scaling
+- Recent transaction cache with efficient lookups
+
+<Note>
+  Deduplication must occur after signature verification due to encryption. The signature verification naturally produces a secure hash that dedup can use.
+</Note>
+
+## Code Security
+
+### Fuzzing
+
+Most Firedancer code is covered by fuzz tests:
+
+- Continuous fuzzing campaigns generate test vectors
+- All parsers and protocol handlers fuzzed extensively
+- Graceful error handling instead of crashes
+- Mock APIs for fuzzing stateful components
+
+#### Test Vectors
+
+Firedancer maintains extensive test vectors:
+
+- [test-vectors repository](https://github.com/firedancer-io/test-vectors)
+- Block, transaction, instruction, and VM execution tests
+- Conformance testing against Agave down to error codes
+- Regression tests for fixed vulnerabilities
+
+<Info>
+  To add test vectors, make a PR to the test-vectors repository, then update `contrib/test/test-vectors-fixtures/test-vectors-commit-sha.txt` with the new commit SHA.
+</Info>
+
+### Memory Safety
+
+Firedancer uses C, which lacks automatic memory safety, but employs several defensive techniques:
+
+#### Bounds Checking
+
+- Explicit size parameters on all buffer operations
+- Validation of all input sizes before processing
+- Assertions for internal invariants
+
+#### Resource Management
+
+Careful resource management prevents leaks:
+
+```c
+// Use do/while for cleanup paths
+do {
+  if( fail1 ) break;
+  // ... more work ...
+  if( fail2 ) break;
+  // ... more work ...
+} while(0);
+
+// Cleanup always runs
+cleanup();
+return;
+```
+
+Or use cleanup attributes:
+
+```c
+int my_lock __attribute__((cleanup(release_lock))) = acquire_lock();
+// Lock released automatically on return or break
+```
+
+<Note>
+  See `FD_SCRATCH_SCOPE_BEGIN/END` in `src/util/scratch/fd_scratch.h` for an example of cleanup attribute macros.
+</Note>
+
+## Runtime Security
+
+### Private Key Protection
+
+The validator private key is highly protected:
+
+- **Dedicated sign tile**: Only one tile has access to the key
+- **Request-response model**: Other tiles send signing requests
+- **No key export**: Key never leaves the sign tile
+- **Separate process option**: Can run sign tile in isolated process
+
+### seccomp Profile Example
+
+A typical tile might allow only:
+
+```
+# Read/write/close for file descriptors
+read, write, close
+
+# Memory operations
+mmap, munmap, mprotect, madvise
+
+# Time
+clock_gettime, gettimeofday
+
+# Futex for synchronization  
+futex
+
+# Exit
+exit, exit_group
+```
+
+Compare to a typical application that might use 100+ different syscalls.
+
+## Audit and Verification
+
+Firedancer undergoes rigorous security review:
+
+### Third-Party Audits
+
+Multiple security firms audit Firedancer:
+
+- Focus on networking, consensus, and runtime components
+- Reports published at [github.com/firedancer-io/audits](https://github.com/firedancer-io/audits)
+- Issues tracked and addressed before release
+
+### Bug Bounty Program
+
+Active bug bounty on Immunefi:
+
+- Rewards for security-relevant bugs
+- Scope covers production-ready components
+- See [immunefi.com/bug-bounty/firedancer](https://immunefi.com/bug-bounty/firedancer/)
+
+<Info>
+  Bugs outside the current bug bounty scope can be reported as GitHub issues. As components mature, they're added to the bounty program.
+</Info>
+
+### Audit Contest
+
+Pre-mainnet audit contest:
+
+- Held July-August 2024 on Immunefi
+- Community security review before mainnet launch
+- Additional layer of scrutiny beyond traditional audits
+
+## Client Diversity Benefits
+
+As a second validator implementation, Firedancer improves network security:
+
+<CardGroup cols={2}>
+  <Card title="Different Language">
+    Written in C vs. Agave's Rust reduces likelihood of language-specific vulnerabilities affecting entire network.
+  </Card>
+  <Card title="Different Dependencies">
+    Minimal third-party dependencies reduce supply chain attack surface.
+  </Card>
+  <Card title="Different Approaches">
+    Alternative security approaches (sandboxing vs. safe languages) provide redundancy.
+  </Card>
+  <Card title="Bug Isolation">
+    Bugs in one client don't affect nodes running the other, improving network robustness.
+  </Card>
+</CardGroup>
+
+<Note>
+  Client diversity is a key factor in blockchain security. Multiple independent implementations prevent single points of failure and make network-wide vulnerabilities much less likely.
+</Note>
+
+## Network Layer Security
+
+### XDP Security Model
+
+AF_XDP provides security benefits:
+
+- **Kernel validation**: eBPF programs verified by kernel before loading
+- **Memory isolation**: UMEM regions isolated from kernel memory
+- **IOMMU protection**: DMA uses IOMMU for memory protection
+- **No raw sockets**: Higher-level abstraction than raw packet access
+
+### Netlink Security
+
+The netlink tile handles network configuration:
+
+- **Separate tile**: Isolated from data path
+- **Read-only cache**: Net tiles only read netlink data
+- **Controlled updates**: Only specific events trigger updates
+- **Neighbor solicitation**: Deduplicated to prevent floods
+
+<Info>
+  The netlink tile provides caching to avoid expensive netlink queries in the data path, improving both performance and security.
+</Info>
+
+## Threat Model
+
+Firedancer is designed to defend against:
+
+### External Attacks
+
+- **Network flooding**: DoS attacks via high packet rates
+- **Malformed packets**: Crafted packets to exploit parsing bugs
+- **Protocol exploits**: Attacks on QUIC, TLS, or Solana protocols
+- **Resource exhaustion**: Memory, CPU, or connection limit attacks
+
+### Malicious Transactions
+
+- **Invalid signatures**: Rejected by verify tile
+- **Duplicate transactions**: Filtered by dedup tile
+- **Malicious programs**: Sandboxed by eBPF VM
+- **State corruption**: Prevented by bank fork isolation
+
+### Compromised Components
+
+- **Tile compromise**: Limited by sandbox, other tiles continue
+- **Privilege escalation**: Prevented by capability dropping
+- **Memory corruption**: Limited by read-only mappings
+- **Code injection**: Difficult due to W^X (write XOR execute)
+
+<Note>
+  The security model assumes the kernel and hardware are trusted. Attacks that compromise the kernel or exploit hardware vulnerabilities (Spectre, Meltdown, etc.) are outside the threat model.
+</Note>
+
+## Future Security Enhancements
+
+Planned security improvements:
+
+- **Multi-process mode**: Further isolation between tiles
+- **Hardware acceleration**: Offload crypto to trusted hardware
+- **Additional fuzzing**: Continuous expansion of fuzz coverage
+- **Formal verification**: Critical components proven correct
+
+## Security Best Practices
+
+When operating Firedancer:
+
+<CardGroup cols={2}>
+  <Card title="Separate NICs">
+    Use separate physical network interfaces for validator traffic and control plane.
+  </Card>
+  <Card title="Firewall Rules">
+    Configure firewall to allow only necessary ports (RPC, gossip, etc.).
+  </Card>
+  <Card title="Monitor Logs">
+    Watch for seccomp violations or unexpected crashes.
+  </Card>
+  <Card title="Keep Updated">
+    Apply security updates promptly from releases.
+  </Card>
+</CardGroup>
+
+## Reporting Security Issues
+
+If you discover a security vulnerability:
+
+1. **In-scope bugs**: Report via [Immunefi bug bounty](https://immunefi.com/bug-bounty/firedancer/)
+2. **Out-of-scope bugs**: Create a [GitHub issue](https://github.com/firedancer-io/firedancer/issues)
+3. **Critical issues**: Contact security@firedancer.io directly
+
+<Info>
+  For issues eligible for the bug bounty program, you may receive a reward. See the Immunefi page for terms and conditions.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture Overview" href="/architecture/overview">
+    Return to the high-level architecture overview
+  </Card>
+  <Card title="Getting Started" href="/guide/getting-started">
+    Start running a secure Firedancer validator
+  </Card>
+</CardGroup>

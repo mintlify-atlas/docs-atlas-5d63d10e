@@ -1,0 +1,310 @@
+---
+title: AF_XDP Networking
+description: Understanding Firedancer's high-performance AF_XDP networking architecture
+---
+
+Firedancer uses AF_XDP, a Linux API for high-performance kernel bypass networking. This architecture enables Firedancer to achieve significantly higher throughput than traditional socket-based networking.
+
+## What is AF_XDP?
+
+AF_XDP (eXpress Data Path sockets) is a Linux socket family that provides fast packet processing by bypassing large parts of the kernel network stack. It offers:
+
+- **Zero-copy I/O** - Network hardware copies packets directly to application memory
+- **Minimal context switches** - Reduces CPU overhead from kernel transitions
+- **Kernel bypass** - Avoids expensive routing and protocol processing
+- **Busy polling** - Eliminates interrupt latency for consistent performance
+
+For background, see the [kernel AF_XDP documentation](https://www.kernel.org/doc/html/next/networking/af_xdp.html).
+
+## Supported Network Drivers
+
+AF_XDP works with any Ethernet network interface, but performance varies by driver. Well-tested drivers include:
+
+- **ixgbe** - Intel X540
+- **i40e** - Intel X710 series
+- **ice** - Intel E800 series
+
+Other drivers may work but have not been extensively tested by the Firedancer team.
+
+## XDP Modes
+
+Firedancer supports two XDP modes:
+
+### DRV Mode (Native XDP)
+
+**drv** mode implements XDP in the network device driver before the kernel allocates packet buffers (`struct sk_buff`). This is the fast mode offering:
+
+- Maximum performance (~20M packets/sec target)
+- Zero-copy I/O with compatible hardware
+- Lowest latency
+
+However, drv mode:
+
+- Requires driver-specific XDP support
+- May be less stable due to driver implementation variations
+- Not available on all network devices
+
+### SKB Mode (Generic XDP)
+
+**skb** mode implements XDP in the kernel network stack after `struct sk_buff` allocation. This is the fallback mode offering:
+
+- Universal compatibility (works on all interfaces)
+- More stable implementation
+- Slower performance than drv mode
+
+Firedancer will attempt drv mode first and fall back to skb mode if necessary.
+
+## Network Architecture
+
+### Net Tiles
+
+Net tiles provide the translation layer between Internet (IPv4) traffic and Firedancer's internal messaging system (Tango). Each net tile:
+
+- Never sleeps (busy polling)
+- Runs a simple event loop
+- Passes incoming packets to application tiles
+- Routes outgoing packets to network interfaces
+- Wakes the kernel ~20k times per second for RX/TX batches
+
+<Note>
+  Each net tile requires a dedicated CPU core that will run at 100% utilization.
+</Note>
+
+### UMEM Regions
+
+A UMEM (user memory) region is XDP's term for packet buffer space. In Firedancer:
+
+- Each net tile manages its own UMEM region
+- UMEM is a 4K-aligned memory region subdivided into 2048-byte frames
+- Each frame carries one Ethernet packet
+- Used for both RX (receive) and TX (transmit)
+
+The UMEM region is shared across:
+
+- Firedancer application tiles (read-only)
+- Firedancer net tiles (read-write)
+- Linux kernel (read-write)
+- PCIe network devices (read-write via IOMMU)
+
+This sharing enables true zero-copy I/O when using drv mode with `XDP_ZEROCOPY` flag.
+
+## XDP Program Installation
+
+When you run Firedancer:
+
+<Steps>
+  <Step title="XDP program loads">
+    Firedancer installs an XDP program on the configured network interface and loopback device.
+  </Step>
+  
+  <Step title="Traffic filtering">
+    The XDP program redirects traffic on Firedancer's ports via AF_XDP. All other traffic (SSH, HTTP, etc.) passes through normally.
+  </Step>
+  
+  <Step title="Automatic cleanup">
+    When Firedancer exits, the XDP program is automatically unloaded.
+  </Step>
+</Steps>
+
+<Warning>
+  Packets received and sent via AF_XDP will not appear in standard network monitoring tools like `tcpdump`.
+</Warning>
+
+## Receive (RX) Path
+
+The RX lifecycle involves three stages:
+
+### 1. FILL Ring
+
+The net tile provides free packet buffers to the kernel by writing buffer pointers to the FILL ring. The kernel/NIC writes incoming packet data to these buffers.
+
+If the FILL ring is empty, incoming packets are dropped (no space to write them).
+
+### 2. RX Ring
+
+The kernel publishes descriptors of newly arrived packets to the RX ring. The net tile:
+
+1. Consumes descriptors from the RX ring
+2. Examines packet headers
+3. Either frees the buffer immediately or forwards it to an application tile
+
+### 3. Application Mcache
+
+Packets destined for application tiles are published to mcache (message cache) rings. Each combination of (net tile, app tile kind) has one RX mcache.
+
+For example, with 2 net tiles, 3 QUIC tiles, and 1 shred tile:
+- `net:0` → `quic` (shared by all QUIC tiles)
+- `net:0` → `shred`
+- `net:1` → `quic`
+- `net:1` → `shred`
+
+Multiple tiles of the same kind read from the same mcache and take turns based on a load balancing hash.
+
+## Transmit (TX) Path
+
+The TX lifecycle involves three stages:
+
+### 1. Application Mcache
+
+Application tiles instruct net tiles to send packets by publishing to TX mcache rings. Each tile has its own TX mcache.
+
+### 2. TX Ring
+
+When a net tile finds a packet to send, it:
+
+1. Allocates a UMEM TX frame
+2. Copies packet payload to the frame
+3. Submits the frame to the TX ring
+
+### 3. Completion Ring
+
+After the kernel finishes transmitting, it moves the frame to the completion ring. The net tile then returns completed frames to the free pool.
+
+## Loopback Handling
+
+The first net tile (`net:0`) sets up XDP on the loopback device for:
+
+- Testing and development
+- Agave sending local traffic to itself (e.g., votes to its own TPU when leader)
+
+The Linux kernel routes packets addressed to local IPs via loopback. Firedancer matches this behavior using a second XDP socket.
+
+<Note>
+  The loopback device only supports XDP in SKB mode (not drv mode).
+</Note>
+
+## Receive Side Scaling (RSS)
+
+Firedancer uses RSS to distribute network processing across multiple CPU cores. Modern NICs steer packets to different queues based on flow hashing.
+
+Each net tile serves exactly one network queue. The `ethtool-channels` configuration stage sets up queue steering. See the initialization guide for details on simple, dedicated, and auto modes.
+
+## Privilege Requirements
+
+AF_XDP requires specific Linux capabilities:
+
+- **CAP_SYS_ADMIN** - Required for XDP program installation
+- **CAP_NET_RAW** - Required for raw socket access
+
+<Warning>
+  These capabilities are why Firedancer requires root privileges on Linux. The validator drops to an unprivileged user after network initialization.
+</Warning>
+
+## Security Protections
+
+Despite kernel bypass, Firedancer maintains strong security:
+
+### Process Isolation
+
+Net tiles and network-facing application tiles are heavily sandboxed using:
+
+- seccomp filters
+- User namespaces
+- Dropped capabilities
+
+### Memory Protection
+
+UMEM regions and RX mcaches are mapped read-only to application tiles, preventing:
+
+- Corrupting unrelated network traffic
+- Tampering with outgoing packets from other tiles
+
+However, application tiles can observe all incoming packets on the interface.
+
+<Note>
+  To completely isolate control plane traffic from Firedancer, use separate physical network interfaces.
+</Note>
+
+### TX Validation
+
+The net tile:
+
+- Read-only maps TX mcaches from application tiles
+- Speculatively copies TX packets
+- Checks for buffer overruns
+- Isolates each tile's TX traffic
+
+## Performance Targets
+
+XDP RX performance target: **~20 million packets per second**
+
+A proof-of-concept achieved this on:
+
+- Ivy Bridge CPU
+- Intel XL710 NIC
+- Linux kernel with i40e in XDP drv mode
+- Preferred busy polling enabled
+- Zero-copy I/O
+
+The current net tile implementation is being incrementally optimized toward this target.
+
+## Known Limitations
+
+Current Firedancer networking limitations (as of v0.4):
+
+<Accordion title="IPv6 not supported">
+  Firedancer only supports IPv4. As of February 2025, practically all Solana traffic uses IPv4. IPv6 support could be added but would increase overhead due to:
+  
+  - Lower MTU (1280 vs 1500)
+  - Mandatory UDP checksums
+  - Longer addresses requiring complex route lookups
+</Accordion>
+
+<Accordion title="Single external interface">
+  The net tile supports only one external network interface (plus loopback). Multiple interface support is planned for the future.
+</Accordion>
+
+<Accordion title="Cannot share interfaces">
+  Firedancer cannot share a network interface with other AF_XDP applications. Only one XDP program can be attached at a time.
+</Accordion>
+
+<Accordion title="Performance impact on other apps">
+  Running Firedancer may reduce performance for other applications using Linux networking on the same interface.
+</Accordion>
+
+<Accordion title="Simple routing only">
+  The net tile only supports simple route tables. Complex routing configurations are not supported.
+</Accordion>
+
+## Monitoring Network Performance
+
+Check network device statistics:
+
+```bash
+ethtool -S <interface>
+```
+
+View XDP program status:
+
+```bash
+ip link show <interface>
+```
+
+Monitor net tile performance:
+
+```bash
+fdctl monitor --config ~/config.toml
+```
+
+Look for:
+
+- **% wait** - Higher is better (not overloaded)
+- **% backp** - Should be low (not backpressured)
+- **backp cnt** - Packet drops due to overload
+
+## Configuration Options
+
+Key network configuration options in your `config.toml`:
+
+```toml
+[net]
+    interface = "eth0"  # Primary network interface
+    
+[layout]
+    net_tile_count = 2  # Number of net tiles (matches queue count)
+    
+[development.net]
+    xdp_mode = "drv"  # or "skb" for compatibility
+```
+
+See the configuration guide for complete network options.

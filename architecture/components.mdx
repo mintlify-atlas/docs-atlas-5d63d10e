@@ -1,0 +1,506 @@
+---
+title: Core Components
+description: Detailed overview of Firedancer's major components - Ballet, Disco, Flamenco, Tango, and Waltz
+---
+
+Firedancer is organized into several major components, each with a specific responsibility. The naming follows a dance theme, reflecting the coordinated nature of the system.
+
+## Component Hierarchy
+
+The components are layered from low-level utilities to high-level application logic:
+
+```
+┌────────────────────────────────────────┐
+│        Application Layer               │
+│    fdctl / fddev / firedancer          │
+└────────────────┬───────────────────────┘
+                 │
+    ┌────────────┼────────────┐
+    │            │            │
+┌───▼───┐   ┌───▼────┐   ┌──▼────┐
+│ Disco │   │ Discof │   │Discoh │  ← Tile implementations
+└───┬───┘   └───┬────┘   └──┬────┘
+    │           │           │
+┌───▼───────────▼───────────▼────┐
+│  Ballet • Choreo • Flamenco    │  ← Business logic
+│       • Funk • Groove           │
+└───┬───────────────────┬────────┘
+    │                   │
+┌───▼────┐          ┌───▼────┐
+│ Tango  │          │ Waltz  │     ← Primitives
+└───┬────┘          └───┬────┘
+    │                   │
+┌───▼───────────────────▼────┐
+│          Util              │     ← Foundation
+└────────────────────────────┘
+```
+
+## Util - Foundation Layer
+
+The lowest layer providing C runtime and system utilities.
+
+**Location**: `src/util/`
+
+### What It Provides
+
+<CardGroup cols={2}>
+  <Card title="Base Types">
+    Integer types (`ulong`, `uint`, `ushort`, `uchar`) that avoid stdint.h pitfalls.
+  </Card>
+  <Card title="Data Structures">
+    High-performance implementations of maps, heaps, queues, and other structures.
+  </Card>
+  <Card title="Memory Management">
+    Workspace allocator, scratch space, huge page support.
+  </Card>
+  <Card title="System Utilities">
+    Logging, timing, random number generation, bit manipulation.
+  </Card>
+</CardGroup>
+
+<Note>
+  Firedancer uses custom integer types instead of stdint.h for better LP64 portability and to avoid common pitfalls.
+</Note>
+
+### Key Features
+
+- **Workspace (wksp)**: Huge-page backed shared memory regions
+- **Scratch allocator**: Fast thread-local allocation with automatic cleanup
+- **fd_util_base.h**: Core types and macros used throughout Firedancer
+- **NUMA support**: Utilities for NUMA-aware memory allocation
+
+## Tango - IPC Messaging Layer
+
+The inter-process communication backbone that connects all tiles.
+
+**Location**: `src/tango/`
+
+### Design Principles
+
+**Tango** is a zero-copy, reliable, in-order messaging system designed for high-performance inter-tile communication.
+
+<CardGroup cols={3}>
+  <Card title="Zero-Copy">
+    Messages are never copied between tiles, only pointers are passed.
+  </Card>
+  <Card title="Reliable">
+    Messages are delivered in order with gap detection.
+  </Card>
+  <Card title="Fast">
+    Optimized for cache efficiency and minimal latency.
+  </Card>
+</CardGroup>
+
+### Core Abstractions
+
+#### mcache (Metadata Cache)
+
+Circular buffer of message fragment metadata:
+
+- **seq**: 64-bit sequence number (unique, monotonic)
+- **sig**: 64-bit signature for fast filtering
+- **chunk**: Pointer to data in dcache
+- **sz**: Fragment size in bytes
+- **ctl**: Control bits (SOM, EOM, ERR)
+- **tsorig/tspub**: Timestamps
+
+#### dcache (Data Cache)
+
+Chunk-based memory region for message payloads:
+
+- 64-byte aligned chunks
+- Huge-page backed for TLB efficiency
+- Shared read-only access for consumers
+- Automatic memory reuse
+
+#### fseq (Flow Sequence)
+
+Flow control mechanism:
+
+- Producers check consumer's fseq
+- Prevents overwhelming slow consumers
+- Enables backpressure signaling
+
+### Message Fragment Model
+
+Tango uses a fragment-based messaging model:
+
+<Info>
+  Messages can be split into multiple fragments. Each fragment has a unique sequence number, and fragments are delivered strictly in order.
+</Info>
+
+**Control Bits**:
+- **SOM** (Start of Message): First fragment of a message
+- **EOM** (End of Message): Last fragment of a message  
+- **ERR**: Entire message should be considered corrupt
+
+### Benefits
+
+- **Monitoring**: Named workspaces enable non-invasive inspection
+- **Debugging**: Capture and replay support
+- **Flexibility**: Works in single-process or multi-process mode
+- **Hardware Ready**: Follows Tango ABI for future FPGA/ASIC acceleration
+
+## Waltz - Networking Stack
+
+High-performance networking components including protocol implementations.
+
+**Location**: `src/waltz/`
+
+### Components
+
+#### XDP (eXpress Data Path)
+
+Linux AF_XDP socket integration for kernel bypass:
+
+- **Zero-copy I/O**: Packets go directly from NIC to application
+- **Busy polling**: Net tiles never sleep, continuously poll for packets
+- **UMEM management**: Shared packet buffer pool
+- **Multiple modes**: `drv` (fast, driver-level) and `skb` (compatible, kernel-level)
+
+<Note>
+  XDP `drv` mode can achieve >20 million packets per second on modern hardware.
+</Note>
+
+#### QUIC Implementation
+
+Full QUIC protocol stack for transaction ingress:
+
+- TLS 1.3 handshake with custom crypto
+- Connection migration support
+- Flow control and congestion control
+- Multi-stream multiplexing
+
+#### HTTP/2 Framing
+
+**Location**: `src/waltz/h2/`
+
+HTTP/2 framing layer (not full HTTP semantics):
+
+- HPACK header compression
+- Frame parsing and generation
+- Flow control
+- Used for RPC server
+
+<Info>
+  Waltz's HTTP/2 implementation provides only the framing layer (RFC 9113 sections 1-7), not full HTTP semantics.
+</Info>
+
+#### DNS Resolver
+
+**Location**: `src/waltz/resolv/`
+
+Lightweight DNS resolution for network connectivity.
+
+### Integration with Net Tiles
+
+Waltz components are used by net tiles to:
+
+1. **Receive packets** from NICs via XDP
+2. **Process QUIC** connections for transaction ingress
+3. **Route packets** to appropriate application tiles
+4. **Transmit packets** back to the network
+5. **Serve HTTP** for RPC endpoints
+
+## Ballet - Solana Primitives
+
+Standalone implementations of cryptographic and encoding standards.
+
+**Location**: `src/ballet/`
+
+### Purpose
+
+Ballet provides self-contained implementations of various standards needed for Solana interoperability:
+
+<CardGroup cols={2}>
+  <Card title="Cryptography">
+    Hash functions (SHA-256, SHA-512, Blake3), signature schemes (ED25519), encryption (AES-GCM).
+  </Card>
+  <Card title="Encoding">
+    Base58, Base64, protobuf (nanopb integration), JSON parsing.
+  </Card>
+  <Card title="ZK Cryptography">
+    Zero-knowledge proof verification for Solana ZK programs.
+  </Card>
+  <Card title="Testing">
+    NIST CAVP test vectors for validation.
+  </Card>
+</CardGroup>
+
+### Key Implementations
+
+#### ED25519 Signature Verification
+
+- **Custom AVX512 implementation**: 2-3x faster than OpenSSL
+- **Batch verification**: Process multiple signatures in parallel
+- **Constant-time**: Resistant to timing attacks
+
+#### SHA-256 / SHA-512
+
+- SIMD-optimized implementations
+- Used in signature verification and hashing
+
+#### Base58 Encoding
+
+- Solana addresses and keys use Base58
+- High-performance encode/decode
+
+<Note>
+  Ballet components are designed to be standalone and reusable. They have no dependencies on other Firedancer components.
+</Note>
+
+### Why "Ballet"?
+
+Ballet represents the fundamental, precisely choreographed movements that everything else builds upon - just as ballet technique forms the foundation of many dance styles.
+
+## Flamenco - Solana Runtime
+
+Solana Virtual Machine (SVM) and runtime implementation.
+
+**Location**: `src/flamenco/`
+
+### Responsibilities
+
+**Flamenco** implements Solana's execution environment:
+
+1. **Transaction Processing**
+   - Parse and validate transactions
+   - Compute transaction fees
+   - Execute instructions
+
+2. **Account Management**
+   - Account state tracking
+   - Rent collection
+   - Account locking and conflict detection
+
+3. **Program Execution**
+   - eBPF VM for Solana programs
+   - System programs (stake, vote, etc.)
+   - Program caching and loading
+
+4. **Block Processing**
+   - Entry validation
+   - Proof of History verification
+   - Bank fork management
+
+### Architecture
+
+```
+┌──────────────────────────────────────┐
+│        Transaction Parser            │
+└───────────────┬──────────────────────┘
+                │
+        ┌───────▼────────┐
+        │  Fee Computation │
+        └───────┬────────┘
+                │
+    ┌───────────▼────────────┐
+    │   Account Locking      │
+    └───────────┬────────────┘
+                │
+        ┌───────▼────────┐
+        │    eBPF VM      │
+        │  (fd_vm)        │
+        └───────┬────────┘
+                │
+    ┌───────────▼────────────┐
+    │  State Updates (Funk)  │
+    └────────────────────────┘
+```
+
+### eBPF VM
+
+Flamenco includes a from-scratch eBPF virtual machine:
+
+- **JIT compilation**: Compile eBPF to native x86_64
+- **Security**: Sandboxed execution with resource limits
+- **Compatibility**: Full Solana BPF compatibility
+- **Performance**: Optimized instruction dispatch
+
+<Info>
+  Flamenco's runtime is designed to be identical to Agave's behavior, down to the same error codes. Compatibility is tested via extensive test vectors.
+</Info>
+
+## Disco - Common Tiles
+
+Tile implementations for networking and block production.
+
+**Location**: `src/disco/`
+
+### Tile Implementations
+
+**Disco** contains the core tiles used by both Frankendancer and full Firedancer:
+
+- **net**: AF_XDP packet I/O
+- **quic**: QUIC protocol handling
+- **verify**: Signature verification
+- **dedup**: Transaction deduplication
+- **pack**: Block packing
+- **shred**: Erasure coding and Turbine
+- **store**: Ledger persistence
+
+### Transaction Pipeline
+
+The diagram from the Disco README shows the historical filtering pipeline:
+
+```
+NIC → [net/quic/verify/dedup] → [filter recent] → [block packing] → Agave
+  │      (Multiple parallel)         (Mux)            (Sequenced)
+  └──→ Horizontal scaling with tag-based parallelization
+```
+
+Key design elements:
+
+- **Horizontal scaling**: Multiple verify tiles process in parallel
+- **Tag-based deduplication**: Cryptographic tags enable parallel dedup
+- **Deep queues**: mcache/dcache pairs buffer between stages
+
+<Note>
+  The "Frankendancer" name comes from this architecture: Firedancer's networking "frankensteined" onto Agave's runtime.
+</Note>
+
+## Discof - Full Firedancer Tiles
+
+Tile implementations for the full native Firedancer validator.
+
+**Location**: `src/discof/`
+
+### Additional Tiles
+
+**Discof** contains tiles for functionality that Frankendancer delegates to Agave:
+
+- **replay**: Block replay and validation
+- **rpcserv**: RPC server implementation  
+- **Consensus**: Fork choice and voting
+
+<Info>
+  Discof tiles use Flamenco's native runtime instead of calling into Agave.
+</Info>
+
+## Discoh - Frankendancer Tiles
+
+Tile implementations that interface with Agave.
+
+**Location**: `src/discoh/`
+
+### FFI Bridge
+
+**Discoh** provides the glue between Firedancer tiles and Agave:
+
+- FFI (Foreign Function Interface) to Rust code
+- Data structure conversion between C and Rust
+- Process management for Agave child process
+
+### Why the Split?
+
+The disco/discof/discoh split allows:
+
+- **Code reuse**: Common tiles in disco
+- **Clean separation**: Native (discof) vs hybrid (discoh) 
+- **Gradual migration**: Replace discoh tiles with discof as they mature
+
+## Supporting Components
+
+### Choreo - Consensus
+
+**Location**: `src/choreo/`
+
+Consensus mechanism components:
+
+- Fork choice (Tower BFT)
+- Voting logic
+- Stake-weighted consensus
+
+### Funk - Account Database
+
+**Location**: `src/funk/`
+
+**Fork-aware in-memory key-value store**:
+
+- Stores account state
+- Supports bank forks
+- Fast lookup and updates
+- Program cache
+
+<Info>
+  "Funk" stands for "Fork-aware Unified Key-value" - a pun on "funk" being another music/dance genre.
+</Info>
+
+### Groove - Persistent Storage
+
+**Location**: `src/groove/`
+
+**Disk-backed memory-mapped cold store**:
+
+- Archives old account states
+- Memory-mapped for fast access
+- Complements Funk's hot in-memory store
+
+### Vinyl - Additional Support
+
+**Location**: `src/vinyl/`
+
+Miscellaneous support components and utilities.
+
+## Wiredancer - FPGA Modules
+
+**Location**: `src/wiredancer/`
+
+FPGA acceleration modules:
+
+- Hardware implementations of performance-critical components
+- Follows Tango ABI for seamless integration
+- Experimental and under development
+
+<Note>
+  Wiredancer uses the same Tango mcache mechanism as software tiles, allowing FPGA modules to be drop-in replacements.
+</Note>
+
+## Component Interaction
+
+Here's how components work together in a complete validator:
+
+```
+Packet arrives at NIC
+        │
+        ▼
+    [Waltz XDP] - Kernel bypass, zero-copy
+        │
+        ▼
+    [Disco: net tile] - Route to quic
+        │
+        ▼ (via Tango)
+    [Disco: quic tile] - Decrypt, extract txn
+        │
+        ▼ (via Tango)  
+    [Disco: verify tile] - Verify signature (Ballet ED25519)
+        │
+        ▼ (via Tango)
+    [Disco: dedup tile] - Remove duplicates
+        │
+        ▼ (via Tango)
+    [Disco: pack tile] - Schedule into block
+        │
+        ▼ (via Tango)
+    [Disco: bank tile] - Execute (Flamenco runtime, Funk state)
+        │
+        ▼ (via Tango)
+    [Disco: poh tile] - Hash PoH
+        │
+        ▼ (via Tango)
+    [Disco: shred tile] - Encode (Ballet erasure)
+        │
+        ▼
+    [Waltz XDP] - Send to network
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Security Model" href="/architecture/security-model">
+    Learn how components are sandboxed and secured
+  </Card>
+  <Card title="Tile System" href="/architecture/tile-system">
+    Understand how tiles communicate and coordinate
+  </Card>
+</CardGroup>

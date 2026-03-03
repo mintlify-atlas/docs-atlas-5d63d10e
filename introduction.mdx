@@ -1,0 +1,59 @@
+---
+title: "Firedancer: A New Solana Validator Client"
+description: "Firedancer is a high-performance validator client for Solana, built from the ground up for speed, security, and client diversity."
+---
+
+# Firedancer 🔥💃
+
+Firedancer is a new validator client for Solana, designed to push the limits of performance while enhancing the security and resilience of the network.
+
+## Built for Performance and Resilience
+
+The Firedancer project brings decades of experience from high-frequency trading to blockchain infrastructure. By leveraging expertise in building low-latency, high-throughput systems, Firedancer aims to significantly improve the power, reliability, and security of the Solana ecosystem.
+
+<CardGroup cols={3}>
+  <Card title="Fast" icon="gauge-high">
+    Designed from the ground up to be fast. The concurrency model draws from experience in the low latency trading space, and the code contains many novel high-performance reimplementations of core Solana primitives.
+  </Card>
+  <Card title="Secure" icon="shield-check">
+    The architecture of the validator allows it to run with a highly restrictive sandbox and almost no system calls. The security model is inspired by methods used in the browser world.
+  </Card>
+  <Card title="Independent" icon="code-branch">
+    Firedancer is written from scratch in C. This brings client diversity to the Solana network and helps it stay resilient to supply chain attacks in build tooling or dependencies.
+  </Card>
+</CardGroup>
+
+## Two Validators, One Codebase
+
+The Firedancer project produces two validators from the same codebase:
+
+<CardGroup cols={2}>
+  <Card title="Frankendancer" icon="cube" href="/frankendancer">
+    A hybrid validator using parts of Firedancer and parts of Agave. Currently available on both Solana testnet and mainnet-beta.
+  </Card>
+  <Card title="Firedancer" icon="fire">
+    A full from-scratch validator with no Agave code. Under active development for future release.
+  </Card>
+</CardGroup>
+
+<Info>
+  Frankendancer uses the Firedancer networking stack and block production components to perform better while leader. Other functionality including execution and consensus uses the Agave validator code.
+</Info>
+
+## Why Firedancer Matters
+
+As a second validator codebase, Firedancer removes the risk of a single point of failure. As nodes are distributed more evenly among several independent codebases, the overall network becomes more robust against any one bug.
+
+**Client Diversity Benefits:**
+- Eliminates single points of failure in the network
+- Reduces the likelihood of network-wide vulnerabilities
+- Provides diversification of security approaches
+- Enables lower cost hardware requirements, encouraging more validator operators to join
+
+## Get Started
+
+Ready to run Firedancer? Check out the Getting Started guide to learn how to set up and operate a Firedancer validator node.
+
+<Card title="Getting Started" icon="rocket" href="/getting-started">
+  Learn how to install, configure, and run a Firedancer validator
+</Card>

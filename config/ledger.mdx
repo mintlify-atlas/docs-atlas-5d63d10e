@@ -1,0 +1,242 @@
+---
+title: Ledger Configuration
+description: Configure ledger storage, accounts database, and snapshot settings
+---
+
+The `[ledger]` section configures storage for the ledger (recent unconfirmed blocks) and accounts database. The `[snapshots]` section controls snapshot creation and retention.
+
+## Ledger Storage
+
+<ParamField path="ledger.path" type="string" default="">
+  Absolute directory path to place the ledger. Firedancer currently spawns an Agave validator to execute transactions that it receives.
+  
+  If no ledger path is provided, it defaults to the `ledger` subdirectory of the scratch directory. Supports `{user}` and `{name}` substitutions.
+  
+  This option is passed to the Agave client with the `--ledger` argument.
+</ParamField>
+
+<ParamField path="ledger.accounts_path" type="string" default="">
+  Absolute directory path to place the accounts database in. If this is empty, it will default to the `accounts` subdirectory of the ledger path above.
+  
+  Supports `{user}` and `{name}` substitutions. This option is passed to the Agave client with the `--accounts` argument.
+</ParamField>
+
+<ParamField path="ledger.limit_size" type="integer" default="200000000">
+  Maximum number of shreds to keep in root slots in the ledger before discarding.
+  
+  The default is chosen to allow enough time for a validator to download a snapshot from a peer and boot from it, and to make sure that if a validator needs to reboot from its own snapshot, it has enough slots locally to catch back up. Works out to around 400GB of space.
+  
+  This option is passed to the Agave client with the `--limit-ledger-size` argument.
+</ParamField>
+
+## Account Indexes
+
+<ParamField path="ledger.account_indexes" type="array" default="[]">
+  If nonempty, enable an accounts index indexed by the specified field. The account field must be one of:
+  - `"program-id"`
+  - `"spl-token-owner"`
+  - `"spl-token-mint"`
+  
+  These options are passed to the Agave client with the `--account-index` argument.
+</ParamField>
+
+<ParamField path="ledger.account_index_exclude_keys" type="array" default="[]">
+  If account indexes are enabled, exclude these keys from the index.
+  
+  These options are passed to the Agave client with the `--account-index-exclude-key` argument.
+</ParamField>
+
+<ParamField path="ledger.account_index_include_keys" type="array" default="[]">
+  If account indexes are enabled, only include these keys in the index. This overrides `account_index_exclude_keys` if specified.
+  
+  These options are passed to the Agave client with the `--account-index-include-key` argument.
+</ParamField>
+
+<ParamField path="ledger.enable_accounts_disk_index" type="boolean" default="false">
+  If account indexes are enabled, they are flushed to disk periodically. Otherwise, the entire index is kept in memory. Setting this to false may reduce disk I/O strain.
+  
+  This option is passed to the Agave client with the `--enable-accounts-disk-index` argument.
+</ParamField>
+
+<ParamField path="ledger.accounts_index_path" type="string" default="">
+  If account indexes are enabled, this is the absolute directory path to place the accounts index in. If this is empty, it will default to the `accounts_index` subdirectory of the ledger path.
+  
+  Setting this will automatically set `enable_accounts_disk_index` to true. This option is passed to the Agave client with the `--accounts-index-path` argument.
+</ParamField>
+
+<ParamField path="ledger.accounts_hash_cache_path" type="string" default="">
+  Absolute directory path to place the accounts hash cache data in. If this is empty, it will default to the `accounts_hash_cache` subdirectory of the ledger path.
+  
+  Every epoch, the client calculates a hash of all the accounts on-chain called the Epoch Accounts Hash. This cache stores intermediate hash data.
+  
+  This option is passed to the Agave client with the `--accounts-hash-cache-path` argument.
+</ParamField>
+
+## Tower and Archive Format
+
+<ParamField path="ledger.snapshot_archive_format" type="string" default="zstd">
+  Whether to use compression when storing snapshots.
+  
+  This option is passed to the Agave client with the `--snapshot-archive-format` argument.
+</ParamField>
+
+<ParamField path="ledger.require_tower" type="boolean" default="false">
+  Refuse to start if saved tower state is not found.
+  
+  This option is passed to the Agave client with the `--require-tower` argument.
+</ParamField>
+
+## Snapshots Configuration
+
+The `[snapshots]` section controls snapshot creation, retention, and download behavior.
+
+<ParamField path="snapshots.enabled" type="boolean" default="true">
+  If false, all snapshots (both full and incremental) will not be produced.
+  
+  This option is passed to the Agave client (inverted) with the `--no-snapshots` argument.
+</ParamField>
+
+<ParamField path="snapshots.incremental_snapshots" type="boolean" default="true">
+  Enable incremental snapshots by setting this flag.
+  
+  This option is passed to the Agave client (inverted) with the `--no-incremental-snapshots` argument.
+</ParamField>
+
+<ParamField path="snapshots.full_snapshot_interval_slots" type="integer" default="25000">
+  Set how frequently full snapshots are taken, measured in slots, where one slot is about 400ms on production chains.
+  
+  It's recommended to leave this to the default or to set it to the same value that the known validators are using. Must be a multiple of the incremental snapshot interval.
+  
+  This option is passed to the Agave client with the `--full-snapshot-interval-slots` argument.
+</ParamField>
+
+<ParamField path="snapshots.incremental_snapshot_interval_slots" type="integer" default="100">
+  Set how frequently incremental snapshots are taken, measured in slots. Must be a multiple of the accounts hash interval (which is 100 by default).
+  
+  This option is passed to the Agave client with the `--snapshot-interval-slots` argument.
+</ParamField>
+
+<ParamField path="snapshots.maximum_full_snapshots_to_retain" type="integer" default="2">
+  Set the maximum number of full snapshot archives to keep when purging older snapshots.
+  
+  This option is passed to the Agave client with the `--maximum-full-snapshots-to-retain` argument.
+</ParamField>
+
+<ParamField path="snapshots.maximum_incremental_snapshots_to_retain" type="integer" default="4">
+  Set the maximum number of incremental snapshot archives to keep when purging older snapshots.
+  
+  This option is passed to the Agave client with the `--maximum-incremental-snapshots-to-retain` argument.
+</ParamField>
+
+<ParamField path="snapshots.minimum_snapshot_download_speed" type="integer" default="10485760">
+  Set the minimum snapshot download speed in bytes per second. If the initial download speed falls below this threshold, the validator will retry the download against a different RPC node.
+  
+  The default value is 10MB/s. This option is passed to the Agave client with the `--minimum-snapshot-download-speed` argument.
+</ParamField>
+
+<ParamField path="snapshots.maximum_snapshot_download_abort" type="integer" default="5">
+  The maximum number of times to abort and retry when encountering a slow snapshot download.
+  
+  The default value is 5 retries. This option is passed to the Agave client with the `--maximum-snapshot-download-abort` argument.
+</ParamField>
+
+<ParamField path="snapshots.path" type="string" default="">
+  Absolute directory path for storing snapshots. If no path is provided, it defaults to the `[ledger.path]` option.
+  
+  Supports `{user}` and `{name}` substitutions. This option is passed to the Agave client with the `--snapshots` argument.
+</ParamField>
+
+<ParamField path="snapshots.incremental_path" type="string" default="">
+  Absolute directory path for storing incremental snapshots. If no path is provided, defaults to the `[snapshots.path]` option above, or if that is not provided, the `[ledger.path]` option.
+  
+  Supports `{user}` and `{name}` substitutions. This option is passed to the Agave client with the `--incremental-snapshot-archive-path` argument.
+</ParamField>
+
+## Configuration Examples
+
+<CodeGroup>
+```toml Basic Ledger Configuration
+[ledger]
+    path = "/mnt/ledger"
+    accounts_path = "/mnt/accounts"
+    limit_size = 200000000
+    snapshot_archive_format = "zstd"
+```
+
+```toml With Account Indexes
+[ledger]
+    path = "/mnt/ledger"
+    accounts_path = "/mnt/accounts"
+    
+    # Enable account indexes
+    account_indexes = ["program-id", "spl-token-owner"]
+    enable_accounts_disk_index = true
+    accounts_index_path = "/mnt/accounts-index"
+```
+
+```toml Snapshot Configuration
+[snapshots]
+    enabled = true
+    incremental_snapshots = true
+    
+    # Snapshot intervals
+    full_snapshot_interval_slots = 25000
+    incremental_snapshot_interval_slots = 100
+    
+    # Retention
+    maximum_full_snapshots_to_retain = 2
+    maximum_incremental_snapshots_to_retain = 4
+    
+    # Download settings
+    minimum_snapshot_download_speed = 10485760  # 10 MB/s
+    maximum_snapshot_download_abort = 5
+    
+    # Storage paths
+    path = "/mnt/snapshots"
+    incremental_path = "/mnt/snapshots/incremental"
+```
+
+```toml Separate Storage Volumes
+[ledger]
+    path = "/mnt/nvme1/ledger"
+    accounts_path = "/mnt/nvme2/accounts"
+    accounts_index_path = "/mnt/nvme3/accounts-index"
+    accounts_hash_cache_path = "/mnt/nvme3/hash-cache"
+
+[snapshots]
+    path = "/mnt/ssd1/snapshots"
+    incremental_path = "/mnt/ssd1/snapshots/incremental"
+```
+</CodeGroup>
+
+## Storage Recommendations
+
+<Warning>
+The ledger and accounts database require significant disk space and high I/O performance. Use fast NVMe SSDs for best results.
+</Warning>
+
+### Disk Space Requirements
+
+- **Ledger**: ~400GB with default `limit_size` of 200M shreds
+- **Accounts Database**: 100-300GB depending on network
+- **Snapshots**: 50-100GB per full snapshot
+- **Account Indexes** (if enabled): 10-50GB depending on index type
+
+### Performance Considerations
+
+<Note>
+For optimal performance:
+- Use separate NVMe drives for ledger and accounts
+- Enable account indexes only if needed by your RPC workload
+- Set `enable_accounts_disk_index = false` to keep indexes in memory if you have sufficient RAM
+- Consider separate volumes for snapshots to isolate I/O
+</Note>
+
+### Snapshot Strategy
+
+The default snapshot settings are optimized for most validators:
+- Full snapshots every 25,000 slots (~2.8 hours)
+- Incremental snapshots every 100 slots (~40 seconds)
+- Keep 2 full and 4 incremental snapshots
+
+Adjust retention based on your storage capacity and disaster recovery needs.

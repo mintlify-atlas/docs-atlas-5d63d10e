@@ -1,0 +1,171 @@
+---
+title: Development Environment Setup
+description: Set up your development environment for contributing to Firedancer
+---
+
+Firedancer currently only supports Linux and requires a relatively new kernel (at least v4.18) to build.
+
+## System Requirements
+
+### Golden Configuration
+
+The most reliable system configuration for development is:
+
+- **Kernel version**: Linux 4.18 or newer
+- **Operating system**: RHEL 8 or Ubuntu 22.04 (or Fedora/Debian equivalents)
+- **Compiler versions**: GCC 12 or Clang 15
+- **CPU**: Icelake Server or Epyc 2 (or newer)
+- **Memory**: 2 gigantic pages (2x1 GiB) per core, reserved via `fd_shmem_cfg`
+
+<Note>
+While Firedancer aims to support tests on a wide variety of hosts (including architectures other than x86), the above configuration is what the Firedancer team uses internally. It also helps eliminate system noise such as page table walks, page faults, allocation failures, and OOM kills.
+</Note>
+
+### Supported Platforms
+
+As of 2024, Firedancer builds on GNU/Linux sysroots with:
+
+- **GCC 8.5 or newer**
+- **Clang** (also supported)
+- **CBMC** (also supported)
+
+The main build target (fdctl) only targets x86_64 with a Haswell-like minimum feature set (AVX2, FMA).
+
+**Experimental support** exists for:
+- musl Linux, macOS, FreeBSD, Solana (SVM) C programs
+- arm64, ppc64le, sBPFv1, sBPFv2
+
+## Initial Setup
+
+<Steps>
+
+<Step title="Clone the repository">
+
+Clone the Firedancer repository with all submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/firedancer-io/firedancer.git
+cd firedancer
+```
+
+</Step>
+
+<Step title="Install dependencies">
+
+Run the dependency installation script with the `+dev` flag to install development dependencies:
+
+```bash
+./deps.sh +dev
+```
+
+This script will:
+- Detect your operating system and distribution
+- Install required system packages
+- Fetch and build external dependencies into the `opt/` directory
+- Use `sudo` for privileged operations if needed
+
+<Note>
+Firedancer aims to have zero out-of-tree library dependencies. The `deps.sh` script fetches and builds large external dependencies, then installs includes and static libraries into a custom prefix (`opt` directory).
+</Note>
+
+</Step>
+
+<Step title="Configure huge pages">
+
+Allocate huge pages for optimal performance:
+
+```bash
+sudo src/util/shmem/fd_shmem_cfg alloc 2 gigantic 0
+```
+
+For detailed large page and NUMA configuration:
+
+```bash
+src/util/shmem/fd_shmem_cfg --help
+```
+
+<Warning>
+If your MEMLOCK limit is low, increase it with:
+```bash
+sudo prlimit --pid $$ --memlock=$((2*1024*1024*1024))
+```
+</Warning>
+
+</Step>
+
+<Step title="Build and run">
+
+Build and run the development validator:
+
+```bash
+make -j run
+```
+
+The `make run` target runs the `fddev dev` command, which will:
+- Ensure your system is configured correctly
+- Create a genesis block
+- Generate keys and set up a faucet
+- Start a validator on the local machine
+
+<Note>
+`fddev` will use `sudo` to make privileged changes to system configuration where needed. If `sudo` is not available, you may need to run the command as root.
+</Note>
+
+</Step>
+
+</Steps>
+
+## Development Cluster
+
+By default, `fddev` creates a new development cluster. To join this cluster with other validators:
+
+1. Define `[rpc.entrypoints]` in the configuration file
+2. Point it at your first validator
+3. Run `fddev dev` again
+
+## Dependency Management
+
+The `deps.sh` script supports several commands:
+
+<CodeGroup>
+
+```bash Help
+./deps.sh help
+# Prints usage information
+```
+
+```bash Fetch
+./deps.sh fetch
+# Fetches dependencies from Git repos into opt/git
+```
+
+```bash Install
+./deps.sh install
+# Builds and installs all project dependencies into opt/
+```
+
+```bash Nuke
+./deps.sh nuke
+# Removes all third-party dependency files
+# Same as 'rm -rf opt/'
+```
+
+</CodeGroup>
+
+## Build Configuration
+
+Firedancer uses GNU Make with machine-specific configurations. The compiler discovers dependencies via:
+
+```bash
+-isystem ./opt/include -L./opt/lib
+```
+
+No need for pkg-config or complex configure scripts.
+
+## Next Steps
+
+Once your environment is set up:
+
+- Review the [Code Style Guide](/developer/code-style) to understand Firedancer coding standards
+- Learn about [Building for Development](/developer/building) to explore different build options
+- Set up your [Testing Environment](/developer/testing) to run the test suite

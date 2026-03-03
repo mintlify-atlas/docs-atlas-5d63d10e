@@ -1,0 +1,176 @@
+---
+title: RPC Configuration
+description: Configure JSON RPC and WebSocket API endpoints
+---
+
+The `[rpc]` section configures the JSON RPC and WebSocket interfaces that allow clients to query chain state and submit transactions.
+
+## Basic RPC Configuration
+
+<ParamField path="rpc.port" type="integer" default="0">
+  If nonzero, enable JSON RPC on this port, and use the next port for the RPC websocket. If zero, disable JSON RPC.
+  
+  This option is passed to the Agave client with the `--rpc-port` argument.
+</ParamField>
+
+<ParamField path="rpc.full_api" type="boolean" default="false">
+  If true, all RPC operations are enabled on this validator, including non-default RPC methods for querying chain state and transaction history.
+  
+  This option is passed to the Agave client with the `--full-rpc-api` argument.
+</ParamField>
+
+<ParamField path="rpc.private" type="boolean" default="false">
+  If the RPC is private, the validator's open RPC port is not published in the `solana gossip` command for use by others.
+  
+  This option is passed to the Agave client with the `--private-rpc` argument.
+</ParamField>
+
+<ParamField path="rpc.bind_address" type="string" default="">
+  The address to bind the RPC port. If no address is specified, the default RPC bind address is 127.0.0.1 if `[rpc.private] = true`, otherwise it's 0.0.0.0.
+  
+  This option is passed to the Agave client with the `--rpc-bind-address` argument.
+</ParamField>
+
+<ParamField path="rpc.public_address" type="string" default="">
+  RPC address for the validator to advertise publicly in gossip. Useful for validators running behind a load balancer or proxy.
+  
+  This option is passed to the Agave client with the `--public-rpc-address` argument.
+</ParamField>
+
+## Transaction History
+
+<ParamField path="rpc.transaction_history" type="boolean" default="false">
+  Enable historical transaction info over JSON RPC, including the `getConfirmedBlock` API. This will cause an increase in disk usage and IOPS.
+  
+  This option is passed to the Agave client with the `--enable-rpc-transaction-history` argument.
+</ParamField>
+
+<ParamField path="rpc.extended_tx_metadata_storage" type="boolean" default="false">
+  If enabled, include CPI inner instructions, logs, and return data in the historical transaction info stored.
+  
+  This option is passed to the Agave client with the `--enable-extended-tx-metadata-storage` argument.
+</ParamField>
+
+<ParamField path="rpc.bigtable_ledger_storage" type="boolean" default="false">
+  If enabled, fetch historical transaction info from a BigTable instance as a fallback to local ledger data when serving RPC requests. The `GOOGLE_APPLICATION_CREDENTIALS` environment variable must be set to access BigTable.
+  
+  This option is passed to the Agave client with the `--enable-rpc-bigtable-ledger-storage` argument.
+</ParamField>
+
+## RPC PubSub
+
+<ParamField path="rpc.pubsub_enable_block_subscription" type="boolean" default="false">
+  If true, enable the unstable RPC PubSub `blockSubscribe` subscription.
+  
+  This option is passed to the Agave client with the `--rpc-pubsub-enable-block-subscription` argument.
+</ParamField>
+
+<ParamField path="rpc.pubsub_enable_vote_subscription" type="boolean" default="false">
+  If true, enable the unstable RPC PubSub `voteSubscribe` subscription.
+  
+  This option is passed to the Agave client with the `--rpc-pubsub-enable-vote-subscription` argument.
+</ParamField>
+
+## Known Validators
+
+<ParamField path="rpc.only_known" type="boolean" default="true">
+  If true, use the RPC service of known validators only.
+  
+  This option is passed to the Agave client with the `--only-known-rpc` argument.
+</ParamField>
+
+## Configuration Examples
+
+<CodeGroup>
+```toml Public RPC Node
+[rpc]
+    # Enable RPC on port 8899 (WebSocket on 8900)
+    port = 8899
+    
+    # Enable full API for public access
+    full_api = true
+    
+    # Bind to all interfaces
+    bind_address = "0.0.0.0"
+    
+    # Not private - publish in gossip
+    private = false
+    
+    # Enable transaction history
+    transaction_history = true
+    extended_tx_metadata_storage = true
+```
+
+```toml Private RPC for Local Access
+[rpc]
+    # Enable RPC on port 9099
+    port = 9099
+    
+    # Full API enabled
+    full_api = true
+    
+    # Private - don't publish in gossip
+    private = true
+    
+    # Bind to localhost only (default when private=true)
+    bind_address = "127.0.0.1"
+```
+
+```toml RPC Behind Load Balancer
+[rpc]
+    port = 8899
+    full_api = true
+    private = false
+    
+    # Bind to internal interface
+    bind_address = "10.0.1.100"
+    
+    # Advertise public IP in gossip
+    public_address = "203.0.113.50:8899"
+    
+    # Enable advanced features
+    transaction_history = true
+    pubsub_enable_block_subscription = true
+```
+
+```toml Disabled RPC
+[rpc]
+    # Port 0 disables RPC entirely
+    port = 0
+```
+</CodeGroup>
+
+## RPC Node Considerations
+
+<Warning>
+Enabling `transaction_history` and `extended_tx_metadata_storage` will significantly increase disk usage and I/O requirements. Ensure your storage can handle the additional load.
+</Warning>
+
+<Note>
+For public RPC nodes, consider:
+- Setting `full_api = true` to enable all RPC methods
+- Enabling `transaction_history` for historical queries
+- Using `public_address` if behind a load balancer
+- Adequate disk space and IOPS for historical data
+</Note>
+
+### Public vs Private RPC
+
+**Public RPC:**
+- Set `private = false` to advertise in gossip
+- Bind to `0.0.0.0` to accept external connections
+- Enable rate limiting and monitoring
+- Ensure adequate bandwidth and resources
+
+**Private RPC:**
+- Set `private = true` to hide from gossip
+- Bind to `127.0.0.1` for local-only access
+- Use for validator operations or trusted internal services
+- Lower resource requirements
+
+### Disabled RPC
+
+Set `port = 0` to completely disable RPC. This is recommended for:
+- Pure consensus validators (not serving RPC)
+- Maximum performance and minimal attack surface
+- Validators that don't need to process RPC queries

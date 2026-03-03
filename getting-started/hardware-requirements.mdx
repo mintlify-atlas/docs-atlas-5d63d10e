@@ -1,0 +1,121 @@
+---
+title: Hardware Requirements
+description: Minimum and recommended hardware specifications for running Firedancer validator
+---
+
+Because Firedancer (Frankendancer) currently depends on the Agave validator, the hardware requirements are at least what's recommended for that validator. Firedancer aims to reduce these requirements over time as the full implementation matures.
+
+<Note>
+For the most up-to-date Agave requirements, see the [Anza documentation](https://docs.anza.xyz/operations/requirements).
+</Note>
+
+## Minimum Requirements
+
+These are the absolute minimum specifications needed to run a Firedancer validator:
+
+- **CPU**: 24-Core AMD or Intel CPU @ >2.8GHz
+- **RAM**: 256GB
+- **Storage**: 2TB PCI Gen3 NVME SSD (High TBW)
+
+<Warning>
+Minimum specifications may result in reduced performance and are not recommended for production mainnet validators.
+</Warning>
+
+## Recommended Specifications
+
+For optimal performance, especially on mainnet, use these recommended specifications:
+
+- **CPU**: 32-Core CPU @ >3GHz with AVX512 support
+- **RAM**: 512GB RAM with ECC memory
+- **Storage**: Same capacity with separate disks for Accounts and Ledger
+- **Network**: 1 Gigabit/s Network Bandwidth
+
+<Tip>
+ECC (Error-Correcting Code) memory is highly recommended to prevent memory corruption issues during long-running validator operations.
+</Tip>
+
+## CPU Considerations
+
+### Core Allocation
+
+Firedancer is designed for high performance by pinning dedicated threads to CPU cores:
+
+- Each tile (processing unit) needs a dedicated CPU core
+- Tiles run at 100% CPU utilization
+- The Agave process runs on separate cores defined by `agave_affinity`
+- Tile cores and Agave cores should not overlap
+
+<Note>
+You can set `affinity` and `agave_affinity` to `"auto"` in your configuration. Firedancer will automatically detect your system topology and configure CPU core assignments optimally.
+</Note>
+
+### AVX512 Support
+
+Firedancer automatically detects the hardware it's being built on and enables architecture-specific instructions for maximum performance:
+
+- Binaries built on one machine may not run on another with different CPU features
+- AVX512 support significantly improves performance
+- If you need to target a different architecture, use the `MACHINE` environment variable during build
+
+## Storage Considerations
+
+### Disk Performance
+
+High TBW (Total Bytes Written) SSDs are essential:
+
+- Validators perform intensive write operations
+- PCI Gen3 NVME or better is required for adequate I/O performance
+- Consider enterprise-grade SSDs for production deployments
+
+### Ledger Compatibility
+
+<Tip>
+The Firedancer blockstore in the ledger directory is compatible with the Agave validator. You can switch between validator clients while keeping the `ledger` directory in place.
+</Tip>
+
+## Network Requirements
+
+### Bandwidth
+
+- **Minimum**: 300 Mbps symmetric
+- **Recommended**: 1 Gbps symmetric
+
+### Supported Network Interfaces
+
+Firedancer uses `AF_XDP`, a Linux API for high-performance networking. While it works with any Ethernet network interface, results may vary across drivers.
+
+**Popular well-tested drivers include:**
+
+- `ixgbe` — Intel X540
+- `i40e` — Intel X710 series
+- `ice` — Intel E800 series
+
+<Warning>
+Packets received and sent via `AF_XDP` will not appear under standard network monitoring tools like `tcpdump`.
+</Warning>
+
+## Memory Requirements
+
+### Build Time
+
+You'll need approximately **32GB of available memory** to build Firedancer. If you run out of memory during compilation, make can return various errors.
+
+### Runtime
+
+The recommended 512GB RAM allows for:
+
+- Running the validator with adequate buffer space
+- Handling account state data
+- Managing the in-memory transaction queue
+- Accommodating future growth in network state
+
+## Additional Resources
+
+Validator operators should also refer to [Solana HCL](https://solanahcl.org/) which has extensive information about hardware compatibility and performance benchmarks.
+
+## Next Steps
+
+Once you've verified your hardware meets these requirements:
+
+- Ensure you've completed [Installation](/getting-started/installation) of dependencies
+- Proceed to [Building](/getting-started/building) to compile Firedancer for your system

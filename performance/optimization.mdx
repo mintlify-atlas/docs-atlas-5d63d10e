@@ -1,0 +1,563 @@
+---
+title: Optimization Techniques
+description: Advanced optimization techniques for maximizing Firedancer validator performance and efficiency
+---
+
+## Overview
+
+Firedancer is designed from the ground up to be fast, with a concurrency model drawn from experience in the low latency trading space. This guide covers advanced optimization techniques to maximize your validator's performance.
+
+## Architecture Optimizations
+
+### Tile Pipeline Design
+
+Firedancer organizes work into a pipeline where transactions flow through the system in a linear sequence:
+
+```
+net → quic → verify → dedup → pack → bank → poh → shred → store
+```
+
+Some of these jobs can be parallelized and run on multiple CPU cores at once:
+
+```
+net → quic → verify × 4 → dedup → pack → bank × 2 → poh → shred → store
+             verify × 4                    bank × 2
+             verify × 4
+             verify × 4
+```
+
+<Note>
+Each instance of a job running on a CPU core is called a **tile**. Tiles communicate with each other using message queues.
+</Note>
+
+### Backpressure Management
+
+If a queue between two tiles fills up, the producer will either:
+
+- **Block** - Wait until there is free space to continue (called backpressure)
+- **Drop** - Discard transactions or data and continue
+
+A slow tile can cause backpressure through the rest of the system causing it to halt. The goal of adding more tiles is to increase throughput of a job, preventing dropped transactions.
+
+**Example:** If the QUIC server produces 100,000 transactions per second, but each verify tile can only handle 20,000 TPS, you would need five verify tiles to keep up without dropping transactions.
+
+## CPU and Memory Optimizations
+
+### Dedicated CPU Cores
+
+Firedancer pins a dedicated thread to each CPU core on the system. Each thread does one specific kind of work, and tiles are connected together in a graph to form an efficient pipeline.
+
+<Warning>
+Each tile needs a dedicated CPU core and it will be saturated at 100% utilization. Never overlap Firedancer tile cores with Agave process cores.
+</Warning>
+
+#### Hyperthreading Considerations
+
+Use stride in affinity strings to skip hyperthread siblings:
+
+```toml
+[layout]
+  # Use stride /2 to use only physical cores
+  affinity = "0-32/2"
+```
+
+This configuration uses physical cores 0, 2, 4, 6, etc., avoiding hyperthread contention.
+
+### Huge Pages
+
+Firedancer pre-allocates all memory in two kinds of pages to prevent TLB misses:
+
+- **Huge pages** - 2 MiB
+- **Gigantic pages** - 1 GiB
+
+```toml
+[hugetlbfs]
+  mount_path = "/mnt/.fd"
+  max_page_size = "gigantic"  # Use 1 GiB pages for best performance
+  gigantic_page_threshold_mib = 128
+```
+
+<Tip>
+Larger page sizes yield better performance by reducing TLB misses. Use "gigantic" (1 GiB) pages when possible. You may need "huge" (2 MiB) on virtualized environments like cloud providers.
+</Tip>
+
+### Memory Workspace
+
+Firedancer creates a "workspace" file in the hugetlbfs mount. The workspace is a single mapped memory region within which the program lays out and initializes all data structures it needs in advance.
+
+```bash
+/mnt/.fd
+  +-- .gigantic              # Files created in this mount use 1 GiB pages
+      +-- firedancer1.wksp
+  +-- .huge                  # Files created in this mount use 2 MiB pages
+      +-- scratch1.wksp
+      +-- scratch2.wksp
+```
+
+## Network Optimizations
+
+### XDP Configuration
+
+Use Linux Express Data Path (XDP) for high-performance networking:
+
+```toml
+[net]
+  provider = "xdp"
+  
+  [net.xdp]
+    # Use driver mode for best performance
+    xdp_mode = "drv"
+    
+    # Enable zero-copy to scale ingress up to 100 Gbps per net tile
+    xdp_zero_copy = true
+    
+    # Increase queue sizes to reduce packet loss
+    xdp_rx_queue_size = 32768
+    xdp_tx_queue_size = 32768
+```
+
+<Tabs>
+  <Tab title="XDP Modes">
+    **skb (default)**
+    - Slowest mode but compatible with all network devices
+    - Well tested and stable
+    - Good for testing and development
+    
+    **drv (recommended)**
+    - Much faster than skb mode
+    - Requires supported hardware (mlx5, i40e, ice drivers)
+    - May require recent Linux kernel versions
+    - Best for production deployments
+    
+    **default**
+    - Automatically selects drv or skb based on hardware support
+  </Tab>
+  
+  <Tab title="Zero-Copy Mode">
+    Zero-copy mode instructs the network device to DMA packets directly into the working memory of downstream tiles:
+    
+    - Reduces CPU usage for packet handling
+    - Scales ingress up to 100 Gbps per net tile
+    - Only works with driver mode XDP
+    - Requires supported hardware
+    
+    ```toml
+    [net.xdp]
+      xdp_mode = "drv"
+      xdp_zero_copy = true
+    ```
+  </Tab>
+  
+  <Tab title="RSS Queue Mode">
+    **simple (default)**
+    - Reduces total queue count to equal number of net tiles
+    - All packets are sharded amongst these queues
+    - Reliable and works everywhere
+    - May impact socket-based traffic
+    
+    **dedicated**
+    - Reserves a dedicated hardware queue for each net tile
+    - Uses ethtool ntuple rules to route by UDP port
+    - Better performance isolation
+    - May not work with all network devices
+    
+    **auto**
+    - Attempts dedicated mode, falls back to simple if needed
+    
+    ```toml
+    [net.xdp]
+      rss_queue_mode = "dedicated"
+    ```
+  </Tab>
+</Tabs>
+
+### Socket Buffers
+
+If using socket networking (not recommended for production), increase buffer sizes:
+
+```toml
+[net.socket]
+  receive_buffer_size = 134217728  # 128 MB
+  send_buffer_size = 134217728     # 128 MB
+```
+
+## Storage Optimizations
+
+### In-Memory Ledger
+
+For maximum performance during benchmarking or when disk I/O is not critical:
+
+```toml
+[ledger]
+  path = "/dev/shm/{name}/ledger"
+```
+
+<Warning>
+Using `/dev/shm` stores the ledger in RAM. This is faster but data will be lost on reboot. Only use for testing or when you have reliable snapshot sources.
+</Warning>
+
+### Snapshot Configuration
+
+Optimize snapshot settings to balance between storage and recovery:
+
+```toml
+[snapshots]
+  enabled = true
+  incremental_snapshots = true
+  full_snapshot_interval_slots = 25000
+  incremental_snapshot_interval_slots = 100
+  snapshot_archive_format = "zstd"  # Fast compression
+  maximum_full_snapshots_to_retain = 2
+  maximum_incremental_snapshots_to_retain = 4
+```
+
+### Ledger Size Limits
+
+Control disk usage by limiting ledger size:
+
+```toml
+[ledger]
+  # Keep ~400GB of ledger data
+  limit_size = 200_000_000
+```
+
+## RPC Optimizations
+
+### Disable Expensive Features
+
+For validators focused on consensus and block production:
+
+```toml
+[rpc]
+  # Disable transaction history to reduce disk I/O
+  transaction_history = false
+  
+  # Disable extended metadata to reduce storage overhead
+  extended_tx_metadata_storage = false
+  
+  # Disable BigTable ledger storage
+  bigtable_ledger_storage = false
+```
+
+### Private RPC Configuration
+
+If you don't want to serve public RPC requests:
+
+```toml
+[rpc]
+  port = 9099
+  full_api = false
+  private = true  # Don't publish RPC port in gossip
+  bind_address = "127.0.0.1"  # Only listen on localhost
+```
+
+## Tile-Specific Optimizations
+
+### Verify Tiles
+
+Signature verification is often the bottleneck. Optimize by:
+
+- **Maximize verify tile count** - Use as many cores as available
+- Each verify tile handles 20-40k TPS on modern hardware
+- Monitor with `fdctl monitor` for saturation
+
+```toml
+[layout]
+  verify_tile_count = 30  # Increase until no longer bottleneck
+```
+
+### Bank Tiles
+
+Bank tiles execute transactions but have diminishing returns:
+
+- **Start with 4 tiles** for balanced scheduling
+- **Use 10-20 tiles** with revenue scheduling
+- Bank tiles don't scale linearly due to lock contention
+
+```toml
+[layout]
+  bank_tile_count = 4  # Good default for mainnet
+  
+[tiles.pack]
+  # Revenue scheduling can benefit from more bank tiles
+  scheduling = "revenue"
+```
+
+### Shred Tiles
+
+Shred performance depends on cluster size:
+
+- **1 tile** is sufficient for mainnet (~5000 validators)
+- **2 tiles** may be needed for testnet
+- Small dev clusters can handle >1M TPS with 1 tile
+
+```toml
+[layout]
+  shred_tile_count = 1  # Usually sufficient
+  
+[tiles.shred]
+  max_pending_shred_sets = 16384  # Increase for high throughput
+```
+
+## Consensus Optimizations
+
+### PoH Speed Test
+
+Verify your hardware can keep up with the network:
+
+```toml
+[consensus]
+  poh_speed_test = true  # Recommended to keep enabled
+```
+
+This runs simulations at startup to ensure your validator can generate proof of history fast enough.
+
+### Network Speed Test
+
+```toml
+[consensus]
+  os_network_limits_test = true  # Verify network configuration
+```
+
+### Known Validators
+
+Only trust snapshots from known validators:
+
+```toml
+[consensus]
+  known_validators = [
+    "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
+    "dDzy5SR3AXdYWVqbDEkVFdvSPCtS9ihF5kJkHCtXoFs",
+  ]
+```
+
+## Agave Process Tuning
+
+### Unified Scheduler Threads
+
+The Agave subprocess uses threads for transaction execution:
+
+```toml
+[layout]
+  # Increase during startup to catch up faster
+  agave_unified_scheduler_handler_threads = 8
+```
+
+**Default calculation:**
+- `agave_cores >= 8`: `agave_cores - 4`
+- `4 <= agave_cores < 8`: `4`
+- `agave_cores < 4`: `agave_cores`
+
+### Core Blocklist
+
+Prevent Firedancer from using cores needed by other processes:
+
+```toml
+[layout]
+  # Blocklist core 0 and its hyperthread sibling
+  blocklist_cores = "0h"
+  
+  # Blocklist multiple cores
+  # blocklist_cores = "0h,1h,2-4"
+```
+
+<Note>
+By default, core 0 and its hyperthread sibling are blocklisted to prevent interference with OS kernel threads.
+</Note>
+
+## Logging Optimizations
+
+### Log Levels
+
+Adjust log verbosity for production:
+
+```toml
+[log]
+  level_logfile = "INFO"    # Detailed logs to file
+  level_stderr = "NOTICE"   # Summary logs to console
+  level_flush = "WARNING"   # Flush on warnings and above
+```
+
+### Log Rotation
+
+Firedancer doesn't support SIGUSR1/SIGUSR2 for log rotation. Use `logrotate` with `copytruncate`:
+
+```bash
+/var/log/firedancer.log {
+  daily
+  rotate 7
+  compress
+  delaycompress
+  copytruncate
+  notifempty
+}
+```
+
+## Monitoring and Profiling
+
+### Prometheus Metrics
+
+Firedancer exposes Prometheus-compatible metrics:
+
+```toml
+[tiles.metric]
+  # Default port 7999
+```
+
+Query metrics:
+
+```bash
+curl http://localhost:7999/metrics
+```
+
+### Live Monitoring
+
+Use `fdctl monitor` to watch tile performance in real-time:
+
+```bash
+fdctl monitor --config ~/config.toml
+```
+
+### GUI
+
+Enable the web GUI for visual monitoring:
+
+```toml
+[tiles.gui]
+  enabled = true
+  gui_listen_address = "127.0.0.1"
+  gui_listen_port = 80
+```
+
+## Production Best Practices
+
+<Tabs>
+  <Tab title="Mainnet Configuration">
+    ```toml
+    # Optimized for mainnet consensus participation
+    
+    [layout]
+      affinity = "auto"
+      agave_affinity = "auto"
+      verify_tile_count = 6
+      bank_tile_count = 4
+      shred_tile_count = 1
+    
+    [net]
+      provider = "xdp"
+      
+      [net.xdp]
+        xdp_mode = "drv"
+        xdp_zero_copy = true
+    
+    [rpc]
+      port = 0  # Disable if not serving RPC
+      transaction_history = false
+      extended_tx_metadata_storage = false
+    
+    [hugetlbfs]
+      max_page_size = "gigantic"
+    
+    [consensus]
+      poh_speed_test = true
+      os_network_limits_test = true
+    ```
+  </Tab>
+  
+  <Tab title="RPC Node Configuration">
+    ```toml
+    # Optimized for serving RPC requests
+    
+    [layout]
+      affinity = "auto"
+      agave_affinity = "auto"
+      verify_tile_count = 6
+      bank_tile_count = 4
+    
+    [rpc]
+      port = 8899
+      full_api = true
+      private = false
+      transaction_history = true
+      extended_tx_metadata_storage = true
+    
+    [ledger]
+      # Use fast NVMe storage for RPC nodes
+      accounts_index_path = "/fast/ssd/accounts_index"
+      accounts_hash_cache_path = "/fast/ssd/accounts_hash_cache"
+    ```
+  </Tab>
+  
+  <Tab title="Development Configuration">
+    ```toml
+    # Optimized for local development
+    
+    [layout]
+      net_tile_count = 1
+      quic_tile_count = 1
+      verify_tile_count = 2
+      bank_tile_count = 2
+      shred_tile_count = 1
+    
+    [ledger]
+      path = "/dev/shm/{name}/ledger"
+    
+    [log]
+      level_stderr = "DEBUG"  # Verbose logging
+    
+    [tiles.gui]
+      enabled = true
+    ```
+  </Tab>
+</Tabs>
+
+## Performance Checklist
+
+- [ ] Use auto or manual affinity with no overlap between Firedancer and Agave cores
+- [ ] Enable XDP with driver mode (`xdp_mode = "drv"`)
+- [ ] Enable XDP zero-copy mode if supported
+- [ ] Use gigantic (1 GiB) pages for memory allocation
+- [ ] Increase verify tile count until no longer bottleneck
+- [ ] Set bank tile count appropriately (4 for balanced, 10-20 for revenue scheduling)
+- [ ] Disable unnecessary RPC features (transaction_history, extended_tx_metadata_storage)
+- [ ] Use in-memory ledger for benchmarking or fast NVMe for production
+- [ ] Enable PoH and network speed tests
+- [ ] Monitor with `fdctl monitor` and Prometheus metrics
+- [ ] Configure log rotation with `copytruncate`
+
+## Troubleshooting Performance Issues
+
+### Low Transaction Throughput
+
+1. Check verify tiles with `fdctl monitor`
+2. Increase `verify_tile_count` if tiles are saturated
+3. Verify no CPU core overlap between Firedancer and Agave
+4. Check network device supports XDP driver mode
+
+### High CPU Context Switches
+
+1. Verify tiles have dedicated CPU cores
+2. Check for affinity overlap
+3. Use the `diag` tile to monitor context switches
+4. Consider disabling hyperthreading in BIOS
+
+### Memory Allocation Failures
+
+1. Verify huge/gigantic pages are configured: `cat /proc/meminfo | grep Huge`
+2. Check hugetlbfs mount: `mount | grep hugetlbfs`
+3. Increase system huge page allocation in `/etc/sysctl.conf`
+
+### Network Packet Loss
+
+1. Switch to XDP driver mode from skb mode
+2. Increase XDP queue sizes
+3. Enable zero-copy mode
+4. Check for network device driver updates
+
+## Additional Resources
+
+- [Performance Tuning Guide](/performance/tuning)
+- [Benchmarking Guide](/performance/benchmarking)
+- [Monitoring Documentation](/operations/monitoring)
+- [Configuration Reference](/getting-started/configuration)
+- [Metrics API](/api/metrics)

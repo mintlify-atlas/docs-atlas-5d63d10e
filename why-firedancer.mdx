@@ -1,0 +1,93 @@
+---
+title: "Why Firedancer"
+description: "Learn why Jump Trading Group built Firedancer and how it aims to improve the Solana ecosystem through performance, security, and client diversity."
+---
+
+# Why Firedancer
+
+## Why Jump Trading Group Built Firedancer
+
+There are many blockchains in existence today, each with different advantages and disadvantages. What differentiates Solana is its design which enables the dissemination of frequent, inexpensive information. It is cheap to use so it does not impose an onerous cost on you as an end user. Solana can handle the high throughput requirements that come with the bursts of activity.
+
+Over the past twenty years, Jump has built a high-capacity, high-reliability, low-latency global network to support trading and address many of the scaling problems that Solana is currently facing. In doing so, Jump has had to think hard about how to take a flood of market data and process it more efficiently than competitors, which means pushing the limits of hardware.
+
+<Info>
+  Leveraging experience over the last two decades in building a global network, Jump is well-positioned to significantly improve the power, reliability, and security of the Solana ecosystem.
+</Info>
+
+The Firedancer project requires a significant commitment of Jump developer resources, and Jump is appreciative of the support from the Solana Foundation to make this project possible.
+
+## Firedancer's Goals for Improving Solana
+
+Firedancer is intended to replicate Solana's functionality but with higher performance. Consistent with Solana's vision, the goal is to eliminate software inefficiencies and drive the performance to the limits of the hardware, while attempting to not create any new vulnerabilities.
+
+### Performance at the Hardware Limit
+
+Firedancer makes minimal use of third party libraries for cryptographic and network functionality where there are currently bottlenecks. Instead, it includes:
+
+- Custom AVX512 ED25519 implementation for signature verification
+- High-performance kernel bypass networking for QUIC and UDP
+- Novel reimplementations of core Solana primitives
+- Optimized block packing logic
+
+<Note>
+  Improved performance means current performance needs can be achieved with lower cost hardware. This should encourage additional validator operators to join the network who were otherwise prohibited by current hardware requirements.
+</Note>
+
+### Client Diversity and Network Resilience
+
+As a second validator codebase, Firedancer removes the risk of a single point of failure. As nodes are distributed more evenly among several independent codebases, the overall network becomes more robust against any one bug.
+
+**Key Diversity Benefits:**
+
+<CardGroup cols={2}>
+  <Card title="Independent Codebase" icon="code">
+    Firedancer is written in C, in contrast to the Rust codebase of the original Solana validator (Agave), which further reduces the likelihood of a vulnerability affecting the entire network.
+  </Card>
+  <Card title="No Shared Dependencies" icon="link-slash">
+    Written from scratch with minimal third-party libraries, Firedancer is resilient to supply chain attacks in build tooling or dependencies.
+  </Card>
+</CardGroup>
+
+### Enhanced Security Model
+
+Firedancer's security model is inspired by methods used in the browser world which is under perpetual attack. Diversification of security approaches is another way the second validator intends to make the network more robust.
+
+The architecture of the validator allows it to run with:
+- A highly restrictive sandbox
+- Almost no system calls
+- Minimal attack surface
+
+## What the Firedancer Team Aims to Deliver
+
+At a high level, the three functional blocks of Solana are network, runtime, and the consensus mechanism.
+
+### Network Layer
+
+The network layer is essentially code complete, and is being tuned and undergoing reviews by auditors. This includes:
+
+- QUIC and UDP ingress networking using high-performance kernel bypass
+- Block distribution engine and egress networking with kernel bypass
+- Full reimplementation of erasure coding
+- Solana turbine protocol for packet routing
+
+### Phased Rollout
+
+<CardGroup cols={2}>
+  <Card title="Phase 1: Frankendancer" icon="1">
+    A hybrid validator with Firedancer's networking layer grafted onto the Agave runtime and consensus code. Currently available on testnet and mainnet-beta.
+  </Card>
+  <Card title="Phase 2: Full Firedancer" icon="2">
+    A fully independent validator with complete runtime and consensus reimplementation. Under active development.
+  </Card>
+</CardGroup>
+
+<Info>
+  Although the networking layer is much faster, Frankendancer's performance may be bottlenecked by the legacy runtime and consensus code. However, Frankendancer still offers significant advantages with DoS mitigation and improved leader performance.
+</Info>
+
+## The Path Forward
+
+The team has been working in parallel on replicating the functionality of the runtime and consensus code, with the goal of delivering a fully independent validator. This incremental approach allows operators to benefit from Firedancer's improvements today while the team continues building toward a complete reimplementation.
+
+By bringing client diversity, enhanced performance, and improved security to the Solana network, Firedancer aims to make the ecosystem more robust and accessible to a wider range of validator operators.

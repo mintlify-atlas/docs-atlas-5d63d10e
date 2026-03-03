@@ -1,0 +1,305 @@
+---
+title: Ballet
+description: Cryptographic primitives and data structures library for Firedancer
+---
+
+Ballet is Firedancer's foundational library providing high-performance cryptographic primitives, encoding/decoding utilities, and data structures optimized for Solana protocol operations.
+
+## Overview
+
+Ballet implements low-level building blocks used throughout Firedancer, including signature verification, hashing, serialization, and Solana-specific data structures. All implementations are optimized for x86 architectures with AVX/AVX-512 support.
+
+<Note>
+Ballet components are designed to be platform-aware, automatically selecting the best implementation based on available CPU features (AVX-512, AVX, or fallback).
+</Note>
+
+## Core Modules
+
+<Accordion title="Cryptographic Primitives">
+
+### Signature Schemes
+
+**Ed25519** (`ed25519/fd_ed25519.h`)
+- ED25519 signature generation and verification
+- Optimized signature batch verification
+- Public key derivation from private keys
+- Error codes: `FD_ED25519_SUCCESS`, `FD_ED25519_ERR_SIG`, `FD_ED25519_ERR_PUBKEY`, `FD_ED25519_ERR_MSG`
+
+**Secp256k1** (`secp256k1/`)
+- ECDSA signature operations
+- Used for Ethereum compatibility
+
+**Secp256r1** (`secp256r1/`)
+- NIST P-256 curve operations
+- Used for secure enclave integration
+
+**BLS12-381** (`bls/fd_bls12_381.h`)
+- BLS signature aggregation
+- Pairing-based cryptography
+
+### Hash Functions
+
+**SHA-256** (`sha256/fd_sha256.h`)
+- Standard SHA-256 hashing
+- Block size: 64 bytes, Hash size: 32 bytes
+- Constants: `FD_SHA256_HASH_SZ`, `FD_SHA256_BLOCK_SZ`
+
+**SHA-512** (`sha512/fd_sha512.h`)
+- SHA-512 hashing
+- Used in Ed25519 operations
+
+**Blake3** (`blake3/fd_blake3.h`)
+- BLAKE3 cryptographic hash function
+- High-performance parallel hashing
+
+**Keccak-256** (`keccak256/`)
+- Ethereum-compatible Keccak hashing
+- Used for EVM integration
+
+</Accordion>
+
+<Accordion title="Encoding & Serialization">
+
+### Text Encoding
+
+**Base58** (`base58/fd_base58.h`)
+- Solana address encoding/decoding
+- Optimized with AVX instructions
+- Standard for Solana public key representation
+
+**Base64** (`base64/fd_base64.h`)
+- Standard Base64 encoding/decoding
+- Used for RPC responses
+
+**Hex** (`hex/`)
+- Hexadecimal encoding utilities
+
+### Binary Formats
+
+**Protocol Buffers** (`pb/`, `nanopb/`)
+- Protobuf serialization
+- Nanopb integration for compact encoding
+
+**TOML** (`toml/`)
+- Configuration file parsing
+
+**JSON** (`json/`)
+- JSON parsing and generation
+
+</Accordion>
+
+<Accordion title="Solana Data Structures">
+
+### Transaction Components
+
+**Transaction** (`txn/`)
+- Transaction parsing and validation
+- Signature verification
+- Account metadata extraction
+
+**Shred** (`shred/fd_shred.h`)
+- Shred encoding/decoding
+- FEC (Forward Error Correction) operations
+- Merkle tree validation
+
+**Microblock** (`block/fd_microblock.h`)
+- Block data structure handling
+- Microblock operations for consensus
+
+### Proof of History
+
+**PoH** (`poh/`)
+- Proof of History hash chain operations
+- SHA-256 based sequential hashing
+
+</Accordion>
+
+<Accordion title="Advanced Cryptography">
+
+### Zero-Knowledge Proofs
+
+**ZK-SDK** (`zksdk/`)
+- Zero-knowledge proof primitives
+- Used for confidential transfers
+- Range proofs and sigma protocols
+
+### Elliptic Curves
+
+**BN254** (`bn254/fd_bn254.h`)
+- Barreto-Naehrig curve operations
+- Scalar field arithmetic
+- Poseidon hash function (`fd_poseidon.h`)
+- GLV endomorphism optimization
+
+**Fiat-Crypto** (`fiat-crypto/`)
+- Formally verified cryptographic primitives
+- Generated from Coq proofs
+
+</Accordion>
+
+<Accordion title="Utilities & Algorithms">
+
+### Data Structures
+
+**Binary Merkle Tree** (`bmtree/fd_bmtree.h`)
+- Efficient Merkle tree operations
+- Used for shred verification
+
+**Reed-Solomon** (`reedsol/`)
+- Forward error correction encoding
+- Used for shred redundancy
+
+### Hashing & Checksums
+
+**SipHash-1-3** (`siphash13/`)
+- Fast keyed hash function
+- Used for hash tables
+
+**MurmurHash3** (`murmur3/`)
+- Non-cryptographic hash function
+- Fast hash table operations
+
+**LtHash** (`lthash/`)
+- Lattice-based homomorphic hashing
+
+### Encryption
+
+**AES** (`aes/fd_aes_gcm.h`)
+- AES-GCM authenticated encryption
+- Hardware-accelerated (AES-NI)
+
+**ChaCha20** (`chacha/fd_chacha.h`)
+- ChaCha20 stream cipher
+- ChaCha20-RNG for random number generation
+
+### Other
+
+**Weighted Sampling** (`wsample/`)
+- Weighted random sampling algorithms
+- Used for leader schedule computation
+
+**UTF-8** (`utf8/`)
+- UTF-8 validation and processing
+
+**X.509** (`x509/`)
+- Certificate parsing and validation
+
+**Zstd** (`zstd/`)
+- Zstandard compression
+
+**Bzip2** (`bzip2/`)
+- Bzip2 compression support
+
+**ELF** (`elf/`)
+- ELF binary parsing
+- Used for eBPF program loading
+
+**sBPF** (`sbpf/`)
+- Solana BPF program support
+- VM bytecode operations
+
+</Accordion>
+
+## Configuration
+
+<CodeGroup>
+
+```c Platform Detection
+// Ballet automatically selects optimal implementations
+#if FD_HAS_AVX512
+#define FD_ALIGN (64UL)
+#elif FD_HAS_AVX
+#define FD_ALIGN (32UL)
+#elif FD_HAS_INT128
+#define FD_ALIGN (16UL)
+#else
+#define FD_ALIGN (8UL)
+#endif
+```
+
+```c TPU MTU
+// Maximum transaction size
+#define FD_TPU_MTU (1232UL)
+```
+
+</CodeGroup>
+
+## Key Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `FD_TPU_MTU` | 1232 bytes | Maximum Solana transaction size |
+| `FD_ALIGN` | 8-64 bytes | Platform-dependent alignment |
+| `FD_ED25519_SIG_SZ` | 64 bytes | Ed25519 signature size |
+| `FD_SHA256_HASH_SZ` | 32 bytes | SHA-256 hash output size |
+| `FD_BASE58_ENCODED_32_SZ` | 44 bytes | Max base58 encoded address length |
+
+## Usage Example
+
+<CodeGroup>
+
+```c Ed25519 Signature
+#include "ballet/ed25519/fd_ed25519.h"
+
+// Sign a message
+uchar sig[64];
+uchar msg[] = "Hello Solana";
+uchar public_key[32];
+uchar private_key[32];
+fd_sha512_t sha;
+
+fd_ed25519_sign(sig, msg, sizeof(msg),
+                public_key, private_key, &sha);
+
+// Verify signature
+int result = fd_ed25519_verify(msg, sizeof(msg),
+                                sig, public_key, &sha);
+if (result == FD_ED25519_SUCCESS) {
+  // Signature is valid
+}
+```
+
+```c SHA-256 Hashing
+#include "ballet/sha256/fd_sha256.h"
+
+fd_sha256_t sha;
+uchar hash[FD_SHA256_HASH_SZ];
+uchar data[] = "data to hash";
+
+fd_sha256_init(&sha);
+fd_sha256_append(&sha, data, sizeof(data));
+fd_sha256_fini(&sha, hash);
+```
+
+```c Base58 Encoding
+#include "ballet/base58/fd_base58.h"
+
+uchar pubkey[32] = { /* ... */ };
+char encoded[FD_BASE58_ENCODED_32_SZ];
+
+fd_base58_encode_32(pubkey, NULL, encoded);
+// Result: Human-readable Solana address
+```
+
+</CodeGroup>
+
+## Performance Characteristics
+
+- **Ed25519 Batch Verification**: Up to 8x faster than individual verification
+- **SHA-256**: Hardware-accelerated on x86 with SHA extensions
+- **Base58**: AVX-optimized encoding/decoding
+- **AES-GCM**: AES-NI accelerated encryption
+- **All algorithms**: Cache-line aware, minimize false sharing
+
+## Header Files
+
+```c
+#include "ballet/fd_ballet.h"      // Main header
+#include "ballet/fd_ballet_base.h" // Base utilities
+```
+
+## Related Components
+
+- [Flamenco](/api/flamenco) - Uses Ballet for transaction processing
+- [Disco](/api/disco) - Uses Ballet for signature verification in tiles
+- [Tango](/api/tango) - Transport layer for Ballet operations

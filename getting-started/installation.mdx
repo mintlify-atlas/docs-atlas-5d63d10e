@@ -1,0 +1,99 @@
+---
+title: Installation
+description: Install prerequisites and dependencies to build Firedancer from source
+---
+
+Firedancer must be built from source and currently only supports building and running on Linux. This guide will walk you through installing all the necessary prerequisites and dependencies.
+
+## Prerequisites
+
+Before you begin, ensure your system meets these requirements:
+
+<Note>
+Firedancer requires a recent Linux kernel, at least v4.18. This corresponds to Ubuntu 20.04, Fedora 29, Debian 11, or RHEL 8.
+</Note>
+
+### Required Software
+
+You need the following software installed on your system:
+
+- **GCC version 8.5 or higher** - Only GCC versions 11, 12, and 13 are officially supported and tested by the Firedancer developers
+- **rustup** - Rust toolchain installer available at [rustup.rs](https://rustup.rs/)
+- **clang** - C language family frontend for LLVM
+- **git** - Version control system
+- **make** - Build automation tool
+
+<Warning>
+Firedancer currently builds the Agave validator as a dependency, which requires a full Rust toolchain. Once Firedancer is able to stand alone, this will no longer be required.
+</Warning>
+
+## Clone the Repository
+
+First, clone the Firedancer source code with all submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/firedancer-io/firedancer.git
+cd firedancer
+```
+
+<Steps>
+  <Step title="Checkout the latest release">
+    After cloning, checkout the latest Frankendancer release tag:
+    
+    ```bash
+    git checkout v0.xxx.yyyyy  # Replace with latest Frankendancer release
+    ```
+    
+    <Tip>
+    Check the [Releases Guide](https://github.com/firedancer-io/firedancer/releases) for the latest version tag.
+    </Tip>
+  </Step>
+
+  <Step title="Install system dependencies">
+    Run the `deps.sh` script to install system packages and compile library dependencies:
+    
+    ```bash
+    ./deps.sh
+    ```
+    
+    This script will:
+    - Install system packages via your system's package manager
+    - Compile library dependencies
+    - Output compiled dependencies to the `./opt` directory
+  </Step>
+</Steps>
+
+## Understanding Releases
+
+Firedancer does not produce pre-built binaries, so you must build from source. Releases are made available as tags with the following naming convention:
+
+<Warning>
+Do not use the `main` branch. The main branch is bleeding edge and includes all Firedancer development and changes that could break Frankendancer.
+</Warning>
+
+### Version Format: v0.xxx.yyyyy
+
+The Frankendancer versioning has three components:
+
+- **Major version** is always `0` - The first full Firedancer release will be `1.x`
+- **Minor version** increments by 100 for each new Frankendancer release, then by 1 for minor versions within that release
+- **Patch number** encodes the Agave validator version (e.g., Agave `v1.17.14` is represented as `11714`)
+
+### Release Branch Example
+
+```
+================= main branch =================
+   \                             \
+    \ v0.100.11814                \ v0.200.11901
+     \                             \
+      \ v0.100.11815                \ v0.201.11902
+       \
+        \ v0.101.11815
+```
+
+## Next Steps
+
+Now that you have installed all dependencies, you're ready to:
+
+- Review [Hardware Requirements](/getting-started/hardware-requirements) to ensure your system is suitable
+- Proceed to [Building](/getting-started/building) to compile Firedancer

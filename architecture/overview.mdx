@@ -1,0 +1,174 @@
+---
+title: Architecture Overview
+description: High-level overview of Firedancer's architecture and design philosophy
+---
+
+Firedancer is a new validator client for Solana designed from the ground up to be fast, secure, and independent. The architecture draws from two decades of experience in low-latency trading systems to push performance to the hardware limits.
+
+## Design Philosophy
+
+Firedancer's architecture is built on three core principles:
+
+<CardGroup cols={3}>
+  <Card title="Fast" icon="rocket">
+    The concurrency model draws from low-latency trading experience, with novel high-performance reimplementations of core Solana primitives.
+  </Card>
+  <Card title="Secure" icon="shield">
+    The architecture allows operation with a highly restrictive sandbox and almost no system calls, inspired by browser security methods.
+  </Card>
+  <Card title="Independent" icon="code">
+    Written from scratch in C, bringing client diversity to Solana and improving resilience to supply chain attacks.
+  </Card>
+</CardGroup>
+
+## Core Architecture
+
+Firedancer is organized into several major components that work together:
+
+### Component Structure
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  Application Layer                   │
+│              (fdctl / firedancer)                    │
+└──────────────────┬──────────────────────────────────┘
+                   │
+    ┌──────────────┼──────────────┐
+    │              │              │
+┌───▼───┐    ┌────▼────┐    ┌───▼────┐
+│ Disco │    │ Discof  │    │ Discoh │
+│ Tiles │    │ (Full)  │    │ (Frank)│
+└───┬───┘    └────┬────┘    └───┬────┘
+    │             │              │
+┌───▼─────────────▼──────────────▼────┐
+│         Core Components              │
+│  Ballet • Flamenco • Choreo • Funk  │
+└───┬──────────────────────────────┬──┘
+    │                              │
+┌───▼────┐                    ┌───▼────┐
+│ Tango  │                    │ Waltz  │
+│  IPC   │                    │  Net   │
+└────────┘                    └────────┘
+```
+
+<Note>
+  All components follow a consistent naming theme based on dance styles, reflecting the coordinated nature of the system.
+</Note>
+
+## Tile-Based Architecture
+
+Firedancer uses a **tile-based architecture** where each thread of execution is called a "tile." This design enables:
+
+- **Horizontal Scaling**: Multiple tiles can run in parallel across CPU cores
+- **NUMA Optimization**: Tiles can be placed near their data on specific NUMA nodes
+- **Hot Swapping**: Individual tiles can be added or removed dynamically
+- **Isolation**: Each tile can run in a restricted sandbox for security
+
+<Info>
+  A tile is analogous to a microservice, but running in the same address space with zero-copy shared memory communication.
+</Info>
+
+### Tile Communication
+
+Tiles communicate through **Tango**, the IPC messaging layer:
+
+- **mcache**: Metadata rings for message headers
+- **dcache**: Data caches for message payloads
+- **fseq**: Flow control sequences
+- **Workspace (wksp)**: Shared memory regions backed by huge pages
+
+This architecture enables:
+
+- Zero-copy message passing
+- Reliable, in-order delivery
+- Non-invasive monitoring and debugging
+- Reproducible capture and replay
+
+## Frankendancer vs. Firedancer
+
+The project delivers validators in two stages:
+
+### Frankendancer (Available Now)
+
+**Frankendancer** is a hybrid validator combining:
+- Firedancer's high-performance networking stack
+- Firedancer's block production components
+- Agave's runtime and consensus code
+
+This configuration is currently available on both testnet and mainnet-beta, offering improved DoS mitigation and leader performance.
+
+### Full Firedancer (In Development)
+
+**Firedancer** is a complete from-scratch validator with:
+- Native runtime implementation
+- Native consensus implementation
+- No Agave dependencies
+
+Both validators are built from the same codebase, with Frankendancer serving as a production-ready stepping stone.
+
+## Workspaces and Memory
+
+Firedancer uses a sophisticated memory management system:
+
+### Workspace Design
+
+- **Huge Page Backed**: One gigantic page-backed workspace per NUMA node
+- **Named Workspaces**: Allow dynamic inspection and monitoring
+- **Standard Permissions**: Uses UNIX permission model for access control
+- **Minimal NUMA Touches**: Core/workspace placement minimizes cross-NUMA traffic
+
+### Benefits
+
+<CardGroup cols={2}>
+  <Card title="Monitoring">
+    Non-invasive inspection of live operations and component inputs
+  </Card>
+  <Card title="Debugging">
+    Capture/replay support for reproducible development
+  </Card>
+  <Card title="Flexibility">
+    Single-process or multi-process deployment models
+  </Card>
+  <Card title="Performance">
+    Huge pages reduce TLB misses and improve memory access
+  </Card>
+</CardGroup>
+
+## Hardware Acceleration Ready
+
+The architecture is designed to support future acceleration:
+
+<Info>
+  Sub-components could potentially be moved (in part or in whole) into FPGA, ASIC, or GPU acceleration, as long as they follow the Tango ABI.
+</Info>
+
+This forward-looking design ensures Firedancer can take advantage of specialized hardware as it becomes available.
+
+## System Requirements
+
+Firedancer currently supports:
+
+- **Platform**: Linux (kernel v4.18 or newer)
+- **Architecture**: x86_64 with AVX2 and FMA (Haswell minimum)
+- **Deployment Models**: Single-process multi-threaded or multi-process
+
+<Note>
+  Experimental support exists for macOS, FreeBSD, arm64, ppc64le, and other platforms.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Tile System" href="/architecture/tile-system">
+    Learn how the tile-based architecture works in detail
+  </Card>
+  <Card title="Components" href="/architecture/components">
+    Explore Ballet, Disco, Flamenco, Tango, and Waltz
+  </Card>
+  <Card title="Security Model" href="/architecture/security-model">
+    Understand Firedancer's security architecture
+  </Card>
+  <Card title="Getting Started" href="/guide/getting-started">
+    Start running a Firedancer validator
+  </Card>
+</CardGroup>

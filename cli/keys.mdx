@@ -1,0 +1,140 @@
+---
+title: fdctl keys
+description: Manage validator identity keypairs
+---
+
+The `fdctl keys` command provides utilities for managing Agave-style validator identity keypairs.
+
+## Subcommands
+
+### keys pubkey
+
+Prints the base58 encoding of the public key in the file at the specified path to standard output and exits.
+
+#### Usage
+
+```bash
+fdctl keys pubkey <PATH>
+```
+
+#### Arguments
+
+<ParamField path="PATH" type="string" required>
+  Path to an Agave-style `identity.json` key file
+</ParamField>
+
+#### Output
+
+The command writes the base58-encoded public key to `stdout` and diagnostic messages from logs to `stderr`.
+
+#### Example
+
+```bash
+fdctl keys pubkey ~/.firedancer/fd1/identity.json
+```
+
+**Output**:
+```
+Fe4StcZSQ228dKK2hni7aCP7ZprNhj8QKWzFe5usGFYF
+```
+
+<Tip>
+  Use this command to verify the public key of your validator identity without having to parse the JSON file manually.
+</Tip>
+
+---
+
+### keys new
+
+Creates a new keypair from the kernel random number generator and writes it to the file specified at the path.
+
+#### Usage
+
+```bash
+fdctl keys new <PATH> [--config <path>]
+```
+
+#### Arguments
+
+<ParamField path="PATH" type="string" required>
+  Path where the new keypair file will be created
+</ParamField>
+
+<ParamField path="--config" type="string">
+  Path to a configuration TOML file which determines the user creating the file
+</ParamField>
+
+#### Behavior
+
+The default user for the operation is the user running the command and should have write access to the specified path. The user can be changed by specifying it in the TOML configuration file.
+
+#### Configuration Example
+
+<CodeGroup>
+```toml config.toml
+user = "firedancer"
+```
+</CodeGroup>
+
+When a configuration file with a `user` field is provided, the keypair will be created with that user's permissions.
+
+#### Example
+
+<Tabs>
+  <Tab title="Basic Usage">
+    Create a keypair as the current user:
+    
+    ```bash
+    fdctl keys new ~/.firedancer/identity.json
+    ```
+  </Tab>
+  
+  <Tab title="With Config">
+    Create a keypair with a specific user from config:
+    
+    ```bash
+    fdctl keys new ~/.firedancer/identity.json --config config.toml
+    ```
+    
+    Where `config.toml` contains:
+    ```toml
+    user = "firedancer"
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Ensure you have proper write permissions to the target directory before creating a new keypair.
+</Warning>
+
+## Key File Format
+
+Both subcommands work with Agave-style `identity.json` keypair files. These files contain:
+
+- The keypair in JSON format
+- Compatible with Agave validator software
+- Can be used interchangeably between Firedancer and Agave
+
+## Security Best Practices
+
+<Steps>
+  <Step title="Protect Your Keys">
+    Store keypairs in a secure location with restricted file permissions:
+    ```bash
+    chmod 600 ~/.firedancer/identity.json
+    ```
+  </Step>
+  
+  <Step title="Backup Your Keys">
+    Always maintain secure backups of your validator identity keys in multiple locations.
+  </Step>
+  
+  <Step title="Verify Keys">
+    After creating or copying keys, use `fdctl keys pubkey` to verify the public key matches your expectations.
+  </Step>
+</Steps>
+
+## Related Commands
+
+- [fdctl run](/cli/run) - Run the validator with an identity key
+- [fdctl set-identity](/cli/other-commands#set-identity) - Change a running validator's identity

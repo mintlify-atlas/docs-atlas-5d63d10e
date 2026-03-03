@@ -1,0 +1,308 @@
+---
+title: Tile-Based Architecture
+description: Deep dive into Firedancer's tile system and inter-tile communication
+---
+
+Firedancer's tile-based architecture is inspired by microservices but optimized for extreme performance. Each tile is a dedicated thread of execution pinned to a specific CPU core, communicating via zero-copy shared memory.
+
+## What is a Tile?
+
+A **tile** is a single-threaded unit of execution that:
+
+- Runs on a dedicated CPU core (pinned via affinity)
+- Performs a specific function in the validator pipeline
+- Communicates with other tiles via shared memory queues
+- Can run in a highly restricted security sandbox
+
+<Info>
+  The term "tile" reflects how these components fit together like tiles in a mosaic, each contributing to the complete picture while remaining independent.
+</Info>
+
+## Tile Types
+
+Firedancer uses 15 different kinds of tiles, each serving a specific purpose:
+
+### Network and Ingress Tiles
+
+| Tile | Count | Description |
+|------|-------|-------------|
+| `net` | 1+ | Handles raw packet I/O using AF_XDP kernel bypass. Manages NIC queues and routes packets to application tiles. |
+| `quic` | 1+ | Implements QUIC protocol for transaction ingress. Handles connection management, encryption, and stream multiplexing. |
+| `verify` | 4+ | Performs signature verification using custom AVX512 ED25519 implementation. Primary bottleneck that scales horizontally. |
+| `dedup` | 1 | Removes duplicate transactions using cryptographically secure hashing from signature verification. |
+
+### Block Production Tiles
+
+| Tile | Count | Description |
+|------|-------|-------------|
+| `pack` | 1 | Schedules transactions into blocks, implements block packing logic for optimal fee collection. |
+| `bank` | 2-6 | Executes transactions in parallel. Handles account locking and state updates. |
+| `poh` | 1 | Generates Proof of History hashes, the blockchain's verifiable clock. |
+| `shred` | 1+ | Encodes blocks into shreds using erasure coding, implements Solana's Turbine protocol for distribution. |
+
+### Support and Monitoring Tiles
+
+| Tile | Count | Description |
+|------|-------|-------------|
+| `store` | 1 | Persists ledger data to disk with memory-mapped I/O. |
+| `replay` | 1 | Replays and validates blocks from the network. |
+| `rpcserv` | 1 | Serves RPC requests over HTTP/WebSocket. |
+| `metric` | 1 | Collects monitoring information and serves it on an HTTP endpoint. |
+| `sign` | 1 | Holds the validator private key, responds to signing requests from other tiles. |
+| `diag` | 1 | Counts context switches and diagnostic information. |
+| `plugin` | 0-1 | Provides data to the GUI tile. |
+
+<Note>
+  Only `net`, `quic`, `verify`, `bank`, and `shred` tile counts are configurable. Other tiles run with fixed counts.
+</Note>
+
+## Tile Performance Characteristics
+
+Based on Intel Xeon Platinum 8481C (Sapphire Rapids) testing:
+
+| Tile | Throughput per Tile | Scaling Notes |
+|------|---------------------|---------------|
+| `net` | >1M TPS | No need for more than 1 on current mainnet-beta |
+| `quic` | >1M TPS | No need for more than 1 on current mainnet-beta |
+| `verify` | 20-40k TPS | Primary bottleneck, recommend many tiles |
+| `bank` | 20-40k TPS | Diminishing returns, 4-6 sufficient for mainnet-beta |
+| `shred` | >1M TPS (small clusters) | 1 tile sufficient for current conditions |
+
+<Info>
+  The verify tile is the primary bottleneck because signature verification is computationally expensive. For high-throughput testing, you may need 20-30 verify tiles.
+</Info>
+
+## Inter-Tile Communication
+
+Tiles communicate through **Tango**, the IPC messaging layer built on shared memory primitives.
+
+### Communication Primitives
+
+#### mcache (Metadata Cache)
+
+A circular ring buffer containing fragment metadata:
+
+```c
+struct fd_frag_meta {
+  ulong seq;      // Sequence number (unique, monotonic)
+  ulong sig;      // Message signature for filtering
+  uint  chunk;    // Data offset (right-shifted by 6)
+  ushort sz;      // Fragment size in bytes
+  ushort ctl;     // Control bits (SOM, EOM, ERR)
+  uint  tsorig;   // Origin timestamp
+  uint  tspub;    // Publish timestamp
+};
+```
+
+#### dcache (Data Cache)
+
+The actual message payload storage:
+
+- 64-byte aligned chunks for cache efficiency
+- Zero-copy access: tiles read directly from producer's memory
+- Backed by huge pages to reduce TLB misses
+
+#### fseq (Flow Control Sequence)
+
+Enables backpressure and flow control:
+
+- Producer checks consumer's fseq before publishing
+- Consumer updates fseq as it processes messages
+- Prevents overwhelming slower tiles
+
+### Message Flow Example
+
+Here's how a transaction flows through tiles:
+
+```
+┌─────┐   raw    ┌──────┐   QUIC    ┌────────┐   verified   ┌───────┐
+│ NET ├─────────►│ QUIC ├──────────►│ VERIFY ├─────────────►│ DEDUP │
+└─────┘  packets └──────┘   packets  └────────┘   txns       └───┬───┘
+                                                                   │
+        ┌──────────────────────────────────────────────────────────┘
+        │ deduped
+        │ txns
+        ▼
+    ┌──────┐   scheduled   ┌──────┐   executed   ┌─────┐
+    │ PACK ├──────────────►│ BANK ├─────────────►│ POH │
+    └──────┘   blocks      └──────┘   results    └──┬──┘
+                                                     │
+        ┌────────────────────────────────────────────┘
+        │ blocks
+        ▼
+    ┌───────┐   shreds    ┌───────┐
+    │ SHRED ├────────────►│ STORE │
+    └───┬───┘             └───────┘
+        │
+        └────► Network (Turbine)
+```
+
+### Zero-Copy Design
+
+One of Tango's key innovations is zero-copy message passing:
+
+1. **Producer writes** data to its dcache workspace
+2. **Producer publishes** metadata to mcache with chunk pointer
+3. **Consumer reads** metadata from mcache
+4. **Consumer accesses** data directly via chunk pointer
+5. **No copying**: Data stays in producer's memory
+
+<Note>
+  When the consumer publishes a new message to its mcache, the old chunk pointer is automatically freed, enabling memory reuse without explicit management.
+</Note>
+
+## Tile Affinity and NUMA
+
+Performance depends heavily on proper CPU core assignment:
+
+### Affinity Configuration
+
+You configure tile-to-core mapping in `fdctl.toml`:
+
+```toml
+[layout]
+  affinity = "1-16,18-33" # CPU cores to use
+  
+  net_tile_count = 1
+  quic_tile_count = 1
+  verify_tile_count = 16  # Use many verify tiles
+  bank_tile_count = 4
+  shred_tile_count = 1
+```
+
+### NUMA Considerations
+
+<CardGroup cols={2}>
+  <Card title="Co-locate Tiles and Data">
+    Place tiles on the same NUMA node as their workspaces to minimize cross-NUMA memory access.
+  </Card>
+  <Card title="NIC Proximity">
+    Place net tiles on the NUMA node closest to the physical NIC for lowest latency.
+  </Card>
+  <Card title="Single NUMA Preferred">
+    For best performance, try to fit all tiles on a single NUMA node if core count allows.
+  </Card>
+  <Card title="Avoid Core Sharing">
+    Each tile should have a dedicated physical core. Avoid hyperthreading siblings.
+  </Card>
+</CardGroup>
+
+## Tile Lifecycle
+
+### Initialization
+
+1. **Workspace creation**: Allocate huge-page backed shared memory
+2. **Tile spawn**: Create threads and pin to CPU cores
+3. **Sandbox setup**: Install seccomp filters and drop capabilities
+4. **Link establishment**: Connect tiles via mcache/dcache pairs
+5. **Ready signal**: Tile signals it's ready to process
+
+### Execution
+
+Most tiles run a simple event loop:
+
+```c
+for(;;) {
+  // Poll for new messages in mcache
+  ulong seq = fd_mcache_seq_query( mcache );
+  if( seq > last_seq ) {
+    // Process new message
+    fd_frag_meta_t const * meta = fd_mcache_line( mcache, seq );
+    void const * data = fd_chunk_to_laddr( workspace, meta->chunk );
+    
+    // Do work...
+    process_message( data, meta->sz );
+    
+    // Publish result to next tile
+    fd_mcache_publish( out_mcache, out_seq++, ... );
+    
+    last_seq = seq;
+  }
+}
+```
+
+<Info>
+  Net tiles never sleep (busy polling), while other tiles may use idle strategies to save CPU when there's no work.
+</Info>
+
+### Monitoring
+
+The `metric` tile collects statistics from all tiles:
+
+- **Busy percentage**: Time spent processing vs. idle
+- **Backpressure**: Whether the tile is slowing down upstream
+- **Overruns**: Whether upstream is overwhelming the tile
+- **Heartbeat**: Liveness indicator
+
+Access metrics via:
+
+```bash
+fdctl monitor  # Real-time TUI
+curl http://localhost:7999/metrics  # Prometheus endpoint
+```
+
+## Dynamic Tile Management
+
+The architecture supports hot-swapping tiles:
+
+<CardGroup cols={2}>
+  <Card title="Add Capacity">
+    Add more verify or bank tiles on-the-fly to handle load spikes.
+  </Card>
+  <Card title="Remove Tiles">
+    Gracefully remove tiles for maintenance without stopping the validator.
+  </Card>
+  <Card title="Isolate Failures">
+    If a tile crashes, the rest continue operating and the tile can be restarted.
+  </Card>
+  <Card title="Rolling Updates">
+    Update individual tile implementations without full validator restart.
+  </Card>
+</CardGroup>
+
+<Note>
+  Dynamic tile management is not yet exposed in fdctl but is supported by the underlying architecture.
+</Note>
+
+## Debugging and Replay
+
+The tile architecture enables powerful debugging:
+
+### Capture and Replay
+
+1. **Capture**: Record all messages to/from a tile to disk
+2. **Isolate**: Extract just the problematic tile's inputs
+3. **Replay**: Re-run the tile with captured inputs
+4. **Debug**: Use standard debuggers with deterministic replay
+
+### Benefits
+
+- **Reproducibility**: Bugs can be reliably reproduced
+- **Isolation**: Debug one tile without running the entire validator
+- **No Heisenbug**: Monitoring doesn't affect behavior
+- **Production Data**: Use real mainnet traffic for testing
+
+## Performance Tuning
+
+To optimize tile performance:
+
+1. **Profile first**: Use `fdctl monitor` to identify bottlenecks
+2. **Scale horizontally**: Add more of the bottleneck tile type
+3. **Check NUMA**: Ensure tiles and data are co-located
+4. **Verify isolation**: Confirm each tile has a dedicated core
+5. **Monitor overruns**: Watch for upstream tiles overwhelming downstream
+
+<Info>
+  See the [Tuning Guide](/performance/tuning) for detailed performance optimization instructions.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Components" href="/architecture/components">
+    Learn about Ballet, Disco, Flamenco, and other components
+  </Card>
+  <Card title="Security Model" href="/architecture/security-model">
+    Understand tile sandboxing and security architecture
+  </Card>
+</CardGroup>

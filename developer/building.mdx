@@ -1,0 +1,319 @@
+---
+title: Building for Development
+description: Build system overview and development build options for Firedancer
+---
+
+Firedancer uses a custom GNU Make-based build system focused on simplicity and robustness. It should be trivial to build Firedancer on a fresh installation of an arbitrary GNU/Linux distribution.
+
+## Quick Start
+
+<CodeGroup>
+
+```bash Default Build
+make -j
+# Parallel build for native machine
+```
+
+```bash Build and Run
+make -j run
+# Build and run development validator
+```
+
+```bash Clean Build
+make clean
+make -j
+```
+
+</CodeGroup>
+
+## Build System Overview
+
+The project uses the build process of a typical statically linked C application for Linux.
+
+### Build Process Flow
+
+```
+┌────────────┐
+│   C/C++    │  cc
+│  sources   ├─────────────┬──────────────────────────────────────────┐
+└────────────┘             │                                          │ cc
+                           │                                          │
+┌────────────┐       ┌─────▼─────┐       ┌─────────────┐       ┌──────▼───────┐
+│  Assembly  │  as   │  Static   │  ar   │   Static    │  cc   │  Executable  │
+│  sources   ├───────►  Objects  ├───────►  Libraries  ├───────►   Binaries   │
+└────────────┘       └─────▲─────┘       └─────────────┘       │              │
+                           │                                   │   Shared     │
+┌────────────┐             │                                   │   Objects    │
+│ Generated  │  cc         │                                   └──────▲───────┘
+│   C code   ├─────────────┤                                          │
+└────────────┘             │                                          │ cc
+                           │                                          │
+┌────────────┐             │                                   ┌──────┴───────┐
+│  Embedded  │  cc         │                                   │  External    │
+│   files    ├─────────────┘                                   │  Static      │
+└────────────┘                                                 │  Libraries   │
+                                                               └──────────────┘
+```
+
+### Compile Units
+
+A **compile unit** is a set of:
+- C/C++ files
+- Assembly files
+- Embedded files (binary content included via `.incbin` assembler directive)
+
+Each compile unit gets compiled into a static object by invoking the GCC or Clang frontend.
+
+<Note>
+On Linux, compile units are position-independent to support ASLR (Address Space Layout Randomization).
+</Note>
+
+## Machine Targets
+
+The `MACHINE` environment variable allows building for different machine configurations.
+
+<CodeGroup>
+
+```bash Native (Default)
+make -j
+# Equivalent to: MACHINE=native make -j
+```
+
+```bash Custom Machine
+MACHINE=my_machine make -j
+# Uses config in: config/machine/my_machine.mk
+```
+
+```bash View Machine Config
+MACHINE=my_machine make help
+# Shows available targets and detailed configuration
+```
+
+</CodeGroup>
+
+### Default Machine
+
+The default machine is `native`, which auto-detects your system configuration.
+
+The "Frankendancer" build target (fdctl) only targets x86_64 with a Haswell-like minimum feature set (AVX2, FMA).
+
+## Build Extras
+
+The `EXTRAS` environment variable enables optional build features defined in `config/extra/with-*.mk`.
+
+### Debug Builds
+
+<CodeGroup>
+
+```bash Debug Mode
+make -j EXTRAS="debug"
+# Enables with-debug.mk extra
+```
+
+```bash Multiple Extras
+make -j EXTRAS="debug other"
+# Enable multiple extras at once
+```
+
+</CodeGroup>
+
+### Sanitizer Builds
+
+Sanitizers bake in various runtime checks for development and testing.
+
+<Warning>
+Using sanitizers is not recommended for production builds.
+</Warning>
+
+<CodeGroup>
+
+```bash AddressSanitizer
+make CC=clang EXTRAS=asan
+# Detects invalid memory accesses
+```
+
+```bash UndefinedBehaviorSanitizer
+make CC=clang EXTRAS=ubsan
+# Detects various kinds of undefined behavior
+```
+
+```bash MemorySanitizer
+make CC=clang EXTRAS=msan
+# Detects reads of uninitialized memory
+# Requires all dependencies to be recompiled
+```
+
+</CodeGroup>
+
+**MemorySanitizer Special Requirements:**
+
+MemorySanitizer requires all dependencies to be recompiled:
+
+```bash
+./deps.sh +msan
+make CC=clang EXTRAS=msan
+```
+
+### Fuzzing Builds
+
+Fuzzers can be combined with sanitizers to find bugs more effectively.
+
+<CodeGroup>
+
+```bash libFuzzer
+make CC=clang EXTRAS=fuzz
+# Requires Clang with libFuzzer support
+```
+
+```bash AFL++
+make CC=clang EXTRAS=afl++ AFL_LIB=/usr/local/lib/afl
+# Requires AFL++ installation
+```
+
+```bash Honggfuzz
+make MACHINE=linux_clang_haswell EXTRAS=honggfuzz
+# Requires hfuzz-clang installation
+```
+
+```bash Fuzzing with Sanitizers
+make CC=clang EXTRAS="fuzz asan"
+# Combine fuzzing with AddressSanitizer
+```
+
+</CodeGroup>
+
+## Code Generation
+
+Generated code is checked into the repository to minimize tooling dependencies.
+
+<Note>
+Code generation tools are only required during development. All code generation tools are written in Python 3.9.
+</Note>
+
+## Dependencies
+
+### System Dependencies
+
+Firedancer depends on:
+- GNU C Library (glibc) - linked dynamically
+- C++ standard library - linked dynamically
+
+Example dynamic dependencies:
+
+```bash
+$ ldd build/native/gcc/bin/fdctl
+        linux-vdso.so.1 (0x00007ffce652e000)
+        librt.so.1 => /lib64/librt.so.1 (0x00007f0d0398c000)
+        libdl.so.2 => /lib64/libdl.so.2 (0x00007f0d03788000)
+        libstdc++.so.6 => /lib64/libstdc++.so.6 (0x00007f0d033f3000)
+        libm.so.6 => /lib64/libm.so.6 (0x00007f0d03071000)
+        libgcc_s.so.1 => /lib64/libgcc_s.so.1 (0x00007f0d02e59000)
+        libpthread.so.0 => /lib64/libpthread.so.0 (0x00007f0d02c39000)
+        libc.so.6 => /lib64/libc.so.6 (0x00007f0d02874000)
+        /lib64/ld-linux-x86-64.so.2 (0x00007f0d097e0000)
+```
+
+### Out-of-tree Dependencies
+
+Firedancer aims for zero out-of-tree library dependencies. For practicality, some large external dependencies are fetched externally.
+
+The `deps.sh` script:
+1. Fetches dependencies
+2. Builds them using their native build scripts
+3. Installs includes and static libraries into `opt/` directory
+
+The compiler discovers these via:
+
+```bash
+-isystem ./opt/include -L./opt/lib
+```
+
+## Build Configuration
+
+### Makefile Evaluation Steps
+
+Each time the Makefile is evaluated:
+
+<Steps>
+
+<Step title="Generate configuration">
+Generate compiler and linker configuration for selected machine target
+</Step>
+
+<Step title="Compiler checks">
+Verify compiler capabilities and features
+</Step>
+
+<Step title="Discover targets">
+Discover available build targets from source tree
+</Step>
+
+<Step title="Execute build rules">
+Execute build rules until selected targets are met
+</Step>
+
+</Steps>
+
+### Configuration Files
+
+Build configuration is spread across:
+
+- `GNUmakefile` - Main entry point
+- `config/machine/*.mk` - Machine-specific settings
+- `config/extra/with-*.mk` - Optional features
+- `config/everything.mk` - Global build rules
+- `src/**/Local.mk` - Per-module build rules
+
+## ABI Stability
+
+Firedancer does not aim to be ABI-stable, with a few exceptions.
+
+<Note>
+Symbols may change or disappear arbitrarily between different versions of the source code.
+</Note>
+
+### Cross-compiler Stability
+
+The C parts of the project try to achieve cross-compiler stability. It should be fine to link together units compiled with:
+- Different versions of GCC
+- A mix of GCC and Clang (from the same Firedancer revision)
+
+### Stable ABI Components
+
+Some small parts explicitly offer a stable ABI for use as a shared library:
+- Cross-client compatibility layer
+- Differential fuzzing targets
+
+## Building on Systems with CPU Isolation
+
+If you have kernel CPU isolation enabled (e.g., `isolcpus` in the kernel command line), make will typically only use non-isolated CPUs for the build.
+
+<Note>
+See the `make-j` script in `contrib/` for help building efficiently on systems with CPU isolation enabled.
+</Note>
+
+## Common Build Targets
+
+<CodeGroup>
+
+```bash All
+make -j
+# Build all targets for native machine
+```
+
+```bash Run
+make -j run
+# Build and run development validator
+```
+
+```bash Clean
+make clean
+# Clean build artifacts for current machine
+```
+
+```bash Help
+make help
+# Show available targets and configuration
+```
+
+</CodeGroup>

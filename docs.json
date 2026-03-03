@@ -1,122 +1,156 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Firedancer",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#1ce7c2",
+    "light": "#14b89e",
+    "dark": "#0fa387"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/firedancer-io/firedancer"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/firedancer-io/firedancer"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Introduction",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "why-firedancer",
+              "frankendancer"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Getting Started",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "getting-started/installation",
+              "getting-started/hardware-requirements",
+              "getting-started/building",
+              "getting-started/configuration",
+              "getting-started/running"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Operations",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "operations/initialization",
+              "operations/monitoring",
+              "operations/troubleshooting",
+              "operations/networking",
+              "operations/permissions"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Performance",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "performance/tuning",
+              "performance/benchmarking",
+              "performance/optimization"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/tile-system",
+              "architecture/components",
+              "architecture/security-model"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "CLI Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Commands",
             "pages": [
-              "api-reference/introduction"
+              "cli/overview",
+              "cli/run",
+              "cli/monitor",
+              "cli/configure",
+              "cli/keys",
+              "cli/other-commands"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Configuration",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "config/overview",
+              "config/consensus",
+              "config/networking",
+              "config/rpc",
+              "config/ledger",
+              "config/tiles"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Components",
+            "pages": [
+              "api/ballet",
+              "api/disco",
+              "api/flamenco",
+              "api/tango",
+              "api/waltz"
+            ]
+          },
+          {
+            "group": "Monitoring",
+            "pages": [
+              "api/metrics",
+              "api/websocket"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Development",
+            "pages": [
+              "developer/setup",
+              "developer/code-style",
+              "developer/building",
+              "developer/testing"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "developer/contributing",
+              "developer/pull-requests",
+              "developer/security"
+            ]
+          },
+          {
+            "group": "Internals",
+            "pages": [
+              "internals/net-tile",
+              "internals/quic-tile",
+              "internals/verify-tile",
+              "internals/block-packing",
+              "internals/af-xdp"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

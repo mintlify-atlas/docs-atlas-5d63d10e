@@ -1,0 +1,369 @@
+---
+title: Testing Guide
+description: Comprehensive guide to testing Firedancer including unit tests, fuzz tests, and sanitizers
+---
+
+Firedancer has a comprehensive test suite including unit tests, fuzz tests, and various sanitizer builds to ensure code quality and security.
+
+## Quick Start
+
+<Steps>
+
+<Step title="Configure huge pages">
+
+Allocate shared memory for tests:
+
+```bash
+sudo src/util/shmem/fd_shmem_cfg alloc 2 gigantic 0
+```
+
+</Step>
+
+<Step title="Build the project">
+
+```bash
+make -j
+```
+
+</Step>
+
+<Step title="Run unit tests">
+
+```bash
+make run-unit-test
+```
+
+</Step>
+
+</Steps>
+
+<Note>
+If your MEMLOCK limit is low, increase it with:
+```bash
+sudo prlimit --pid $$ --memlock=$((2*1024*1024*1024))
+```
+</Note>
+
+## Golden Configuration
+
+The most reliable system configuration for testing:
+
+- **Kernel version**: Linux 4.18 or newer
+- **Operating system**: RHEL 8 or Ubuntu 22.04 (or Fedora/Debian equivalents)
+- **Compiler versions**: GCC 12 or Clang 15
+- **CPU**: Icelake Server or Epyc 2 (or newer)
+- **Memory**: 2 gigantic pages (2x1 GiB) per core, reserved via `fd_shmem_cfg`
+
+<Warning>
+While Firedancer aims to support tests on various hosts, the golden configuration is what the team uses internally. It helps eliminate system noise such as page table walks, page faults, allocation failures, and OOM kills.
+</Warning>
+
+## Unit Tests
+
+### Overview
+
+**Unit tests** are C programs that contain test logic for Firedancer's modules. They can be found adjacent to source code in the `src/` directory and are titled `test_{...}.c`.
+
+### Creating Unit Tests
+
+Example `Local.mk` configuration:
+
+```makefile
+# call make-unit-test,name,         object list,dependencies
+$(call make-unit-test,test_mymodule,test_module,fd_ballet fd_util)
+```
+
+### Automatic Unit Tests
+
+**Automatic unit tests** run without any command-line parameters and:
+- May only run on the main thread
+- Complete successfully given 2 GiB memory (backed by any page type)
+- Are tested on every commit as-is
+- Run at least weekly with extended instrumentation
+- Typically finish in under 5 minutes
+
+Example `Local.mk` configuration:
+
+```makefile
+# call run-unit-test,name
+$(call run-unit-test,test_mymodule)
+```
+
+## Fuzz Tests
+
+### Overview
+
+**Fuzz tests** verify the behavior of a component given a large number of arbitrary byte sequences. Fuzzing is particularly effective at finding bugs in:
+- Parsers
+- Protocol handlers
+- Serialization/deserialization logic
+
+**Differential fuzz tests** can detect diverging behavior when comparing a module to a reference implementation (e.g., the virtual machine).
+
+### Creating Fuzz Tests
+
+Example `Local.mk` configuration:
+
+```makefile
+ifdef FD_HAS_HOSTED
+# call make-fuzz-test,name,         object list,  dependencies,     link flags (optional)
+$(call make-fuzz-test,fuzz_mymodule,fuzz_mymodule,fd_ballet fd_util,-lfoo)
+endif
+```
+
+### Fuzzing Engines
+
+Multiple fuzzing engines are supported:
+
+<CodeGroup>
+
+```bash libFuzzer
+make CC=clang EXTRAS=fuzz
+# Part of recent LLVM versions
+# Most convenient way to get started
+# Requires Clang
+```
+
+```bash AFL++
+make CC=clang EXTRAS=afl++ AFL_LIB=/usr/local/lib/afl
+# Requires AFL++ installation
+# Look for AFL library install directory
+```
+
+```bash Honggfuzz
+make MACHINE=linux_clang_haswell EXTRAS=honggfuzz
+# Persistent fuzzing mode with sanitizer-coverage
+# Requires hfuzz-clang
+# Only supported via MACHINE variable
+```
+
+</CodeGroup>
+
+### Installing AFL++
+
+```bash
+git clone https://github.com/AFLplusplus/AFLplusplus
+cd AFLplusplus
+make all
+# Look for:
+# [+] afl-fuzz and supporting tools successfully built
+# [+] LLVM basic mode successfully built
+# [+] LLVM mode successfully built
+# [+] LLVM LTO mode successfully built
+sudo make install
+```
+
+### Stub Fuzzing Engine
+
+If no fuzzing engine is provided, fuzz tests are built with a stub engine. The stub engine cannot find new inputs but can regression test against old inputs:
+
+```bash
+build/native/gcc/fuzz-test/fuzz_bla/fuzz_bla <input1> <input2> ...
+```
+
+### Combining Fuzzers with Sanitizers
+
+For improved error detection, combine fuzzers with sanitizers:
+
+```bash
+make CC=clang EXTRAS="fuzz asan"
+# Fuzzing with AddressSanitizer
+
+make CC=clang EXTRAS="fuzz ubsan"
+# Fuzzing with UndefinedBehaviorSanitizer
+```
+
+## Sanitizers
+
+The codebase supports several sanitizers that add runtime checks for various error conditions.
+
+<Warning>
+Using sanitizers is not recommended for production builds.
+</Warning>
+
+### AddressSanitizer (ASan)
+
+Detects invalid memory accesses:
+- Use-after-free
+- Heap buffer overflow
+- Stack buffer overflow
+- Use-after-return
+- Memory leaks
+
+```bash
+make CC=clang EXTRAS=asan
+```
+
+### UndefinedBehaviorSanitizer (UBSan)
+
+Detects various kinds of undefined behavior:
+- Integer overflow
+- Misaligned pointers
+- Invalid shifts
+- Null pointer dereference
+
+```bash
+make CC=clang EXTRAS=ubsan
+```
+
+### MemorySanitizer (MSan)
+
+Detects reads of uninitialized memory.
+
+<Note>
+MemorySanitizer requires all dependencies to be recompiled:
+</Note>
+
+```bash
+./deps.sh +msan
+make CC=clang EXTRAS=msan
+```
+
+## Test Vectors
+
+Firedancer runs a large set of test vectors in CI that test conformance between Firedancer and Agave's execution down to the same error code.
+
+Test vector inputs are sourced from:
+- Vectors generated by past fuzzing campaigns
+- Hand-written / manually generated unit tests
+- Fixed mismatches, added as regression tests
+
+### Adding New Test Vectors
+
+<Steps>
+
+<Step title="Create fixtures">
+
+Make a pull request into the [test-vectors repository](https://github.com/firedancer-io/test-vectors) with your new fixtures.
+
+See [solana-conformance](https://github.com/firedancer-io/solana-conformance) for information on generating fixtures.
+
+</Step>
+
+<Step title="Update commit SHA">
+
+Once merged, make a pull request into Firedancer updating:
+
+```
+contrib/test/test-vectors-fixtures/test-vectors-commit-sha.txt
+```
+
+with the latest test vectors GitHub commit SHA containing your change.
+
+</Step>
+
+</Steps>
+
+## Best Practices
+
+### Determinism
+
+Running the same test program (with unvarying inputs) should result in predictable behavior.
+
+- Use deterministic pseudorandom number generators like `fd_rng_t`
+- Allow users to change RNG seed or iteration count via command-line flags
+- Avoid using current time as a random value
+- Don't depend on test execution order
+
+### No Inputs Required
+
+Unit tests should support automatic configuration:
+- Bundle inputs using `FD_IMPORT_BINARY`
+- Run without additional command-line arguments
+- Default to sensible configuration values
+
+### Memory Management
+
+<Warning>
+**DO NOT CALL `MALLOC()` IN TESTS.**
+</Warning>
+
+Instead, use one of these approaches:
+
+#### Static Variables
+
+For small-ish amounts of memory (e.g., 4 MiB), use `.bss` by declaring uninitialized static variables:
+
+```c
+static uchar my_buffer[4*1024*1024];
+```
+
+This has better support for embedded targets like on-chain virtual machines.
+
+#### Workspace Allocation
+
+For larger amounts of memory, allocate an anonymous workspace from shmem:
+
+```c
+char const * _page_sz = fd_env_strip_cmdline_cstr ( &argc, &argv, "--page-sz",  NULL, "gigantic" );
+ulong        page_cnt = fd_env_strip_cmdline_ulong( &argc, &argv, "--page-cnt", NULL, 1UL        );
+ulong        numa_idx = fd_env_strip_cmdline_ulong( &argc, &argv, "--numa-idx", NULL, fd_shmem_numa_idx(cpu_idx) );
+
+FD_LOG_NOTICE(( "Creating workspace with --page-cnt %lu --page-sz %s pages on --numa-idx %lu", 
+                page_cnt, _page_sz, numa_idx ));
+fd_wksp_t * wksp = fd_wksp_new_anonymous( page_sz, page_cnt, fd_shmem_cpu_idx( numa_idx ), "wksp", 0UL );
+FD_TEST( wksp );
+
+/* ... tests ... */
+
+fd_wksp_delete_anonymous( wksp );
+```
+
+**Supported command-line flags:**
+- `--page-sz`: Size of memory pages (normal/huge/gigantic)
+- `--page-cnt`: Number of pages to request
+- `--numa-idx`: NUMA node for memory allocation
+
+<Note>
+Most tests default to 1 "gigantic" page (1 GiB) as per the recommendation to use x86 1 GiB pages.
+</Note>
+
+#### Using fd_scratch
+
+Using `fd_scratch` over "raw" shmem pages or `static uchar[]` is also acceptable.
+
+## Memory Configuration
+
+For detailed large page and NUMA configuration:
+
+```bash
+src/util/shmem/fd_shmem_cfg --help
+```
+
+## Running Tests
+
+<CodeGroup>
+
+```bash All Unit Tests
+make run-unit-test
+# Run all automatic unit tests
+```
+
+```bash Specific Test
+build/native/gcc/unit-test/test_mymodule
+# Run a specific unit test
+```
+
+```bash Test with Options
+build/native/gcc/unit-test/test_mymodule --page-cnt 2 --page-sz huge
+# Run test with custom memory configuration
+```
+
+```bash Fuzz Test Regression
+build/native/gcc/fuzz-test/fuzz_mymodule/fuzz_mymodule corpus/*
+# Regression test fuzz inputs
+```
+
+</CodeGroup>
+
+## Continuous Testing
+
+Firedancer runs tests:
+- On every commit (automatic unit tests)
+- At least weekly with extended instrumentation
+- With various sanitizers and fuzzing engines
+- Against test vectors for conformance with Agave
+
+<Note>
+The test suite is designed to be reliable and run on a wide variety of hosts to encourage in-depth testing.
+</Note>

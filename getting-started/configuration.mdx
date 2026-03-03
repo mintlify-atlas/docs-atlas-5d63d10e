@@ -1,0 +1,262 @@
+---
+title: Configuration
+description: Configure your Firedancer validator using TOML configuration files
+---
+
+Firedancer is configured via a [TOML](https://toml.io/en/) file. Almost all options have recommended default values set automatically, so you only need to specify values for options you wish to change.
+
+<Tip>
+If you're migrating from Agave, command line options like `--identity identity.json --rpc-port 8899` need to move to corresponding configuration options in the TOML file.
+</Tip>
+
+## Basic Configuration
+
+Here's a minimal configuration for running a validator on testnet:
+
+```toml config.toml
+user = "firedancer"
+
+[gossip]
+    entrypoints = [
+      "entrypoint.testnet.solana.com:8001",
+      "entrypoint2.testnet.solana.com:8001",
+      "entrypoint3.testnet.solana.com:8001",
+    ]
+
+[consensus]
+    identity_path = "/home/firedancer/validator-keypair.json"
+    vote_account_path = "/home/firedancer/vote-keypair.json"
+
+    known_validators = [
+        "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
+        "dDzy5SR3AXdYWVqbDEkVFdvSPCtS9ihF5kJkHCtXoFs",
+        "Ft5fbkqNa76vnsjYNwjDZUXoTWpP7VYm3mtsaQckQADN",
+        "eoKpUABi59aT4rR9HGS3LcMecfut9x7zJyodWWP43YQ",
+        "9QxCLckBiJc783jnMvXZubK4wH86Eqqvashtrwvcsgkv",
+    ]
+
+[rpc]
+    port = 8899
+    full_api = true
+    private = true
+
+[reporting]
+    solana_metrics_config = "host=https://metrics.solana.com:8086,db=tds,u=testnet_write,p=c4fa841aa918bf8274e3e2a44d77568d9861b3ea"
+```
+
+## Essential Configuration Options
+
+### User and Permissions
+
+```toml
+user = "firedancer"
+```
+
+The operating system user to run Firedancer as after privileged initialization. This user should:
+
+- **Not** be `root` or a superuser
+- **Not** have `sudo` access
+- Be minimally permissioned
+- Be separate from other processes for security isolation
+
+<Warning>
+Firedancer starts privileged (as root or with specific capabilities) to configure kernel bypass networking. After initialization, it drops all privileges and switches to this user.
+</Warning>
+
+### Identity Keys
+
+```toml
+[consensus]
+    identity_path = "/home/firedancer/validator-keypair.json"
+    vote_account_path = "/home/firedancer/vote-keypair.json"
+```
+
+- **`identity_path`** — Path to your validator identity keypair (Agave format)
+- **`vote_account_path`** — Path to your vote account keypair, or the public key of an existing vote account
+
+<Note>
+You can generate keypairs using the `fdctl keys` subcommand.
+</Note>
+
+### Data Directory
+
+By default, Firedancer places the ledger and other data in:
+
+```
+/home/{user}/.firedancer/{name}/ledger
+```
+
+Where `{user}` is the configured user and `{name}` defaults to "fd1".
+
+<Tip>
+The Firedancer blockstore in the ledger directory is compatible with the Agave validator. You can switch between validator clients while keeping the `ledger` directory in place.
+</Tip>
+
+## Network Configuration
+
+### Gossip Entrypoints
+
+```toml
+[gossip]
+    entrypoints = [
+      "entrypoint.testnet.solana.com:8001",
+      "entrypoint2.testnet.solana.com:8001",
+      "entrypoint3.testnet.solana.com:8001",
+    ]
+```
+
+Specify the gossip entrypoints for the cluster you want to join.
+
+<CodeGroup>
+
+```toml Testnet
+[gossip]
+    entrypoints = [
+      "entrypoint.testnet.solana.com:8001",
+      "entrypoint2.testnet.solana.com:8001",
+      "entrypoint3.testnet.solana.com:8001",
+    ]
+```
+
+```toml Mainnet-Beta
+[gossip]
+    entrypoints = [
+      "entrypoint.mainnet-beta.solana.com:8001",
+      "entrypoint2.mainnet-beta.solana.com:8001",
+      "entrypoint3.mainnet-beta.solana.com:8001",
+    ]
+```
+
+</CodeGroup>
+
+### Known Validators
+
+```toml
+[consensus]
+    known_validators = [
+        "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
+        "dDzy5SR3AXdYWVqbDEkVFdvSPCtS9ihF5kJkHCtXoFs",
+    ]
+```
+
+List trusted validator identities for the cluster.
+
+## RPC Configuration
+
+```toml
+[rpc]
+    port = 8899
+    full_api = true
+    private = true
+```
+
+- **`port`** — RPC server port (default: 8899)
+- **`full_api`** — Enable the full RPC API
+- **`private`** — Don't publish RPC port to gossip
+
+<Warning>
+Although setting `private = true` prevents publishing to gossip, use a firewall to restrict access to the RPC port for maximum security.
+</Warning>
+
+## Performance Configuration
+
+### Layout and Tile Configuration
+
+```toml
+[layout]
+    affinity = "auto"
+    quic_tile_count = 2
+    verify_tile_count = 4
+    bank_tile_count = 4
+    agave_affinity = "auto"
+```
+
+Firedancer pins dedicated threads to CPU cores for optimal performance:
+
+- Each tile needs a dedicated CPU core at 100% utilization
+- Setting `affinity = "auto"` lets Firedancer detect your system topology automatically
+- Tune tile counts for maximum throughput
+
+<Note>
+Example tuned configurations can be found in the `src/app/fdctl/config/` folder of the source repository.
+</Note>
+
+### Custom CPU Affinity
+
+For manual control:
+
+```toml
+[layout]
+    affinity = "1-18"
+    agave_affinity = "19-31"
+```
+
+<Warning>
+The `affinity` and `agave_affinity` ranges should not overlap. Each tile needs its own dedicated core.
+</Warning>
+
+## Logging Configuration
+
+```toml
+[log]
+    level_stderr = "INFO"
+    level_logfile = "INFO"
+    colorize = "auto"
+```
+
+Firedancer maintains two logs:
+
+- **Permanent log** — Written to file for archival
+- **Ephemeral log** — Written to stderr for visual inspection
+
+Available log levels (lowest to highest priority):
+
+- `DEBUG` — Development and diagnostic messages
+- `INFO` — Informational notices
+- `NOTICE` — Important informational notices
+- `WARNING` — Unexpected conditions
+- `ERR` — Routine errors (kills Firedancer)
+- `CRIT` — Critical errors (kills Firedancer)
+
+## Reporting and Metrics
+
+```toml
+[reporting]
+    solana_metrics_config = "host=https://metrics.solana.com:8086,db=tds,u=testnet_write,p=..."
+```
+
+The Firedancer client can report diagnostic metrics similar to Agave. Set the appropriate metrics configuration for your cluster.
+
+<Tip>
+Metrics configuration options for different clusters are listed in the `default.toml` file in the source repository's `reporting` section.
+</Tip>
+
+## Using Your Configuration
+
+Once your configuration file is created, use it by either:
+
+### Environment Variable
+
+```bash
+export FIREDANCER_CONFIG_TOML=~/config.toml
+```
+
+### Command Line Flag
+
+```bash
+sudo ./build/native/gcc/bin/fdctl run --config ~/config.toml
+```
+
+<Warning>
+The same configuration file must be supplied to all commands, especially when configuring and later running the validator. Using different files for different commands may cause them to fail.
+</Warning>
+
+## Complete Configuration Reference
+
+For a complete list of all available configuration options and their default values, see the [`default.toml`](https://github.com/firedancer-io/firedancer/blob/main/src/app/fdctl/config/default.toml) file in the Firedancer repository.
+
+## Next Steps
+
+Now that you have a configuration file:
+
+- Proceed to [Running](/getting-started/running) to initialize and start your validator

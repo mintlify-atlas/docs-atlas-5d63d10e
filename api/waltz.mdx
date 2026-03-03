@@ -1,0 +1,508 @@
+---
+title: Waltz
+description: Network protocol implementations and I/O primitives
+---
+
+Waltz is Firedancer's collection of network protocol implementations and I/O primitives, providing high-performance networking capabilities for validator operations. It includes QUIC, HTTP/2, TLS, gRPC, and low-level network stack components.
+
+## Overview
+
+Waltz provides production-grade implementations of modern network protocols optimized for Firedancer's high-throughput requirements. The components are designed to work with Tango's IPC framework and support zero-copy operations where possible.
+
+<Note>
+Waltz protocols are built for performance-critical paths in validator operations, particularly TPU (Transaction Processing Unit) ingress over QUIC.
+</Note>
+
+## Core Protocols
+
+<Accordion title="QUIC">
+
+### QUIC (`quic/`)
+
+RFC 9000/9001 compliant QUIC implementation:
+
+**Overview:**
+```c
+// fd_quic_t: QUIC connection manager
+// - Multiplexed streams over UDP
+// - TLS 1.3 encryption
+// - Connection migration
+// - Flow control and congestion control
+```
+
+**Features:**
+- **0-RTT connection establishment**: Reduced handshake latency
+- **Connection multiplexing**: Multiple streams per connection
+- **Loss recovery**: Selective acknowledgment
+- **Congestion control**: Cubic/BBR algorithms
+- **Connection migration**: IP/port changes without reconnection
+
+**Memory management:**
+- Pre-allocated connection slots
+- Uniform stream buffers
+- Configurable limits via `fd_quic_limits_t`
+- Workspace-backed allocation
+
+**Lifecycle:**
+```
+allocated → formatted → joined → ready → fini → joined
+    ↑         ↓           ↓        ↓               ↓
+    └─────────delete      leave────┘          leave
+```
+
+**API example:**
+```c
+// Create QUIC instance
+fd_quic_limits_t limits = { /* ... */ };
+void * mem = /* allocate */;
+fd_quic_t * quic = fd_quic_join(fd_quic_new(mem, &limits));
+
+// Initialize for use
+fd_quic_config_t config = { /* ... */ };
+fd_quic_init(quic, &config);
+
+// Service connections
+while (running) {
+  fd_quic_service(quic);
+}
+```
+
+**Use cases:**
+- Solana TPU (Transaction Processing Unit) ingress
+- Validator-to-validator communication
+- RPC over QUIC
+- High-throughput packet delivery
+
+**Performance:**
+- Single-threaded, non-blocking
+- Scales via multiple instances
+- RX steering by connection ID
+- Zero-copy where possible
+
+</Accordion>
+
+<Accordion title="HTTP/2 & gRPC">
+
+### HTTP/2 (`h2/`)
+
+HTTP/2 protocol implementation:
+
+**Components:**
+```c
+// fd_h2_conn: HTTP/2 connection
+// fd_h2_proto: Protocol state machine
+// fd_h2_callback: Event callbacks
+// fd_h2_rbuf: Ring buffer utilities
+```
+
+**Features:**
+- Binary framing protocol
+- Stream multiplexing
+- Header compression (HPACK)
+- Server push
+- Flow control
+
+**Stream management:**
+- Multiple concurrent streams
+- Priority and dependency
+- Stream state tracking
+- Graceful shutdown
+
+**Buffer abstractions:**
+- `fd_h2_rbuf`: Ring buffer interface
+- `fd_h2_rbuf_ossl`: OpenSSL backend
+- `fd_h2_rbuf_sock`: Socket backend
+
+### gRPC (`grpc/`)
+
+gRPC client implementation:
+
+**Components:**
+```c
+// fd_grpc_client: gRPC client
+// fd_grpc_codec: Protobuf encoding
+```
+
+**Features:**
+- Unary and streaming RPCs
+- Protocol buffer serialization
+- HTTP/2 transport
+- Metadata support
+
+**Use cases:**
+- External service integration
+- Monitoring and observability
+- Control plane communication
+
+</Accordion>
+
+<Accordion title="TLS">
+
+### TLS (`tls/`)
+
+TLS 1.3 encryption layer:
+
+**Integration:**
+- Used by QUIC for encryption
+- Standalone TLS connections
+- Certificate management
+- Session resumption
+
+**Cipher suites:**
+- AES-GCM (hardware accelerated)
+- ChaCha20-Poly1305
+- Forward secrecy (ECDHE)
+
+**Certificate handling:**
+- X.509 certificate parsing (Ballet x509)
+- Certificate chain validation
+- Private key operations
+
+</Accordion>
+
+<Accordion title="Network Stack">
+
+### IP Layer (`ip/`)
+
+IPv4/IPv6 packet processing:
+
+**Features:**
+- Packet parsing and generation
+- Checksum calculation (hardware offload)
+- Fragmentation/reassembly
+- MTU handling
+
+**Supported:**
+- IPv4 over Ethernet (EN10MB)
+- IPv6 (partial support)
+- UDP transport
+
+### Neighbor Discovery (`neigh/`)
+
+ARP/NDP resolution:
+
+**Functions:**
+- MAC address resolution
+- Neighbor cache management
+- ARP request/reply
+- IPv6 Neighbor Discovery
+
+### Routing (`resolv/`)
+
+DNS resolution and routing:
+
+**Features:**
+- DNS A/AAAA record lookup
+- Caching resolver
+- Timeout and retry logic
+
+### MIB (`mib/`)
+
+Management Information Base:
+
+**Metrics:**
+- Network statistics
+- Connection state
+- Error counters
+- Performance monitoring
+
+</Accordion>
+
+<Accordion title="Low-Level I/O">
+
+### Async I/O (`aio/`)
+
+Asynchronous I/O framework:
+
+**Components:**
+```c
+// fd_aio: Base async I/O interface
+// fd_aio_pcapng: PCAP-NG capture
+// fd_aio_tango: Tango integration
+```
+
+**Abstractions:**
+- Non-blocking I/O operations
+- Event-driven packet delivery
+- Multiple backend support
+
+**Backends:**
+- Tango (mcache/dcache)
+- PCAP-NG files (capture/replay)
+- Network sockets
+
+**PCAP-NG support:**
+```c
+// fd_aio_pcapng: Packet capture
+// - Write packets to .pcapng files
+// - Read packets for replay
+// - Timestamp preservation
+// - Multi-interface capture
+```
+
+**Tango integration:**
+```c
+// fd_aio_tango: Tango I/O
+// - Receive from mcache/dcache
+// - Publish to mcache/dcache
+// - Zero-copy operation
+```
+
+### XDP (`xdp/`)
+
+AF_XDP (eXpress Data Path) integration:
+
+**Features:**
+- Kernel bypass networking
+- Zero-copy packet I/O
+- High-performance RX/TX
+- Hardware queue steering
+
+**Benefits:**
+- Lower latency than sockets
+- Higher throughput
+- CPU efficiency
+- Still in kernel (vs. DPDK)
+
+### eBPF (`ebpf/`)
+
+eBPF program integration:
+
+**Components:**
+```c
+// fd_ebpf_asm: eBPF assembly
+// fd_linux_bpf: Linux BPF syscalls
+```
+
+**Use cases:**
+- XDP program loading
+- Packet filtering
+- Load balancing
+- DDoS mitigation
+
+### UDP Sockets (`udpsock/`)
+
+High-performance UDP socket wrapper:
+
+**Features:**
+- Multi-queue support
+- SO_REUSEPORT load balancing
+- Socket options optimization
+- Error handling
+
+</Accordion>
+
+<Accordion title="Traffic Management">
+
+### RTT Estimation (`fd_rtt_est.h`)
+
+Round-trip time estimation:
+
+**Algorithm:**
+```c
+struct fd_rtt_est {
+  // Smoothed RTT
+  // RTT variance
+  // Retransmit timeout (RTO)
+};
+```
+
+**Usage:**
+- Congestion control
+- Timeout calculation
+- Connection quality monitoring
+
+### Token Bucket (`fd_token_bucket.h`)
+
+Rate limiting via token bucket:
+
+**Implementation:**
+```c
+struct fd_token_bucket {
+  ulong tokens;      // Available tokens
+  ulong capacity;    // Max tokens
+  ulong rate;        // Refill rate
+  ulong last_update; // Last refill time
+};
+```
+
+**Use cases:**
+- Connection rate limiting
+- Bandwidth throttling
+- QoS enforcement
+- DDoS mitigation
+
+### OpenSSL Integration (`openssl/`)
+
+OpenSSL library integration:
+
+**Features:**
+- Cryptographic operations
+- TLS handshake
+- Certificate operations
+- Hardware acceleration
+
+</Accordion>
+
+## Configuration
+
+### QUIC Configuration
+
+<CodeGroup>
+
+```c QUIC Limits
+fd_quic_limits_t limits = {
+  .conn_cnt        = 1024,   // Max connections
+  .stream_cnt      = 8192,   // Streams per connection
+  .inflight_pkt_cnt = 1024,  // Inflight packets
+  .tx_buf_sz       = 1<<20,  // TX buffer size
+  .rx_buf_sz       = 1<<20,  // RX buffer size
+};
+```
+
+```c QUIC Config
+fd_quic_config_t config = {
+  .role       = FD_QUIC_ROLE_SERVER,
+  .net        = &net_config,
+  .initial_rx_max_stream_data = 1<<16,
+  .ack_delay  = 25*1000*1000, // 25ms
+  .idle_timeout = 30*1000*1000*1000UL, // 30s
+};
+```
+
+</CodeGroup>
+
+## Performance Features
+
+- **Zero-copy**: Direct memory access via Tango dcache
+- **Kernel bypass**: AF_XDP for high-performance networking
+- **Hardware offload**: Checksum, TSO, LRO when available
+- **Multi-queue**: Parallel RX/TX queues
+- **NUMA awareness**: Memory locality optimization
+
+## Network Topology
+
+Typical Firedancer networking:
+
+```
+NIC (XDP) → net tile → verify tiles → dedup → pack → execle
+    ↓           ↓            ↓            ↓       ↓       ↓
+  QUIC      Waltz I/O    Tango IPC   Tango   Tango   Tango
+```
+
+**Flow:**
+1. NIC receives packets (XDP)
+2. Waltz QUIC decrypts and demuxes
+3. Tango IPC passes to verify tiles
+4. Ballet performs signature verification
+5. Continue through Disco pipeline
+
+## MTU & Sizing
+
+```c
+// From fd_disco_base.h
+#define FD_NET_MTU    (2048UL) // XSK max entry size
+#define FD_TPU_MTU    (1232UL) // Solana transaction MTU
+#define FD_GOSSIP_MTU (1232UL) // Gossip message MTU
+
+// IPv6 minimum MTU - headers
+// 1280 - 40 (IPv6) - 8 (UDP) = 1232
+```
+
+## Usage Examples
+
+<CodeGroup>
+
+```c QUIC Server
+// Setup QUIC server
+fd_quic_limits_t limits = { /* ... */ };
+fd_quic_t * quic = fd_quic_new(mem, &limits);
+
+fd_quic_config_t config = {
+  .role = FD_QUIC_ROLE_SERVER,
+  .net  = { .ip_addr = 0x7f000001, .listen_udp_port = 8000 },
+};
+
+fd_quic_callbacks_t callbacks = {
+  .conn_new = on_connection,
+  .stream_receive = on_data,
+  /* ... */
+};
+
+fd_quic_set_callbacks(quic, &callbacks);
+fd_quic_init(quic, &config);
+
+// Service loop
+while (running) {
+  fd_quic_service(quic);
+}
+```
+
+```c Token Bucket
+// Rate limiting
+fd_token_bucket_t bucket = {
+  .tokens   = 1000,
+  .capacity = 1000,
+  .rate     = 100, // tokens/sec
+};
+
+// Try to consume tokens
+if (fd_token_bucket_consume(&bucket, 1, now)) {
+  // Process packet
+} else {
+  // Rate limited, drop or queue
+}
+
+// Refill happens automatically on next consume
+```
+
+```c AIO PCAP
+// Capture to PCAP-NG file
+fd_aio_pcapng_t * pcap = fd_aio_pcapng_join(
+  fd_aio_pcapng_new(mem, "capture.pcapng")
+);
+
+// Send packet to capture
+fd_aio_send(pcap, packet, packet_sz, /* ... */);
+
+// Replay from PCAP
+fd_aio_pcapng_t * replay = fd_aio_pcapng_join(
+  fd_aio_pcapng_open(mem, "replay.pcapng")
+);
+```
+
+</CodeGroup>
+
+## Platform Support
+
+**Linux:**
+- AF_XDP (kernel 4.18+)
+- eBPF (kernel 4.15+)
+- io_uring (kernel 5.1+)
+- SO_REUSEPORT (kernel 3.9+)
+
+**Hardware offloads:**
+- Checksum offload (IP, TCP, UDP)
+- TSO (TCP Segmentation Offload)
+- LRO (Large Receive Offload)
+- RSS (Receive Side Scaling)
+
+## Header Files
+
+```c
+#include "waltz/fd_waltz_base.h"  // Base header
+#include "waltz/quic/fd_quic.h"   // QUIC
+#include "waltz/h2/fd_h2.h"       // HTTP/2
+#include "waltz/grpc/fd_grpc_client.h" // gRPC
+#include "waltz/tls/fd_tls.h"     // TLS
+#include "waltz/aio/fd_aio.h"     // Async I/O
+#include "waltz/xdp/fd_xdp.h"     // XDP
+#include "waltz/fd_rtt_est.h"     // RTT estimation
+#include "waltz/fd_token_bucket.h" // Rate limiting
+```
+
+## Related Components
+
+- [Disco](/api/disco) - Uses Waltz for network tile operations
+- [Tango](/api/tango) - IPC framework for inter-tile communication
+- [Ballet](/api/ballet) - Cryptographic primitives for TLS/QUIC

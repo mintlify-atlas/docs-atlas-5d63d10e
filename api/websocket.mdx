@@ -1,0 +1,593 @@
+---
+title: WebSocket API
+description: Real-time streaming API for subscribing to Firedancer validator information and performance data
+---
+
+## Overview
+
+Firedancer provides an optional [HTTP WebSocket](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API) API for consumers to subscribe to validator information. It primarily exists to support the Firedancer GUI and provides real-time streaming of validator state, performance metrics, and blockchain data.
+
+<Note>
+The API is not currently stable, is not versioned, may not exist for long, may break or start producing incorrect data at any moment, and should not generally be used for production applications without extreme caution.
+</Note>
+
+## Connecting
+
+### Configuration
+
+First, configure the GUI tile in your `config.toml`:
+
+```toml config.toml
+[tiles]
+    [tiles.gui]
+        listen_port = 80
+```
+
+### JavaScript Client
+
+Create a WebSocket client connection:
+
+```javascript client.js
+const client = new WebSocket("ws://localhost:80/websocket");
+
+client.onopen = () => {
+  console.log("Connected to Firedancer WebSocket API");
+};
+
+client.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log(`Topic: ${data.topic}, Key: ${data.key}`);
+  console.log(`Value:`, data.value);
+};
+```
+
+## Message Format
+
+All data is encoded in JSON with a containing envelope:
+
+```json
+{
+    "topic": "summary",
+    "key": "cluster",
+    "value": "mainnet-beta"
+}
+```
+
+<ResponseField name="topic" type="string" required>
+The high-level category of the message (e.g., `summary`, `slot`, `gossip`, `peers`).
+</ResponseField>
+
+<ResponseField name="key" type="string" required>
+The specific data type within the topic (e.g., `version`, `cluster`, `ping`).
+</ResponseField>
+
+<ResponseField name="value" type="any" required>
+The actual data payload. Can be a string, number, object, or array depending on the message type.
+</ResponseField>
+
+## Compression
+
+The server can optionally compress messages larger than 200 bytes using Zstandard compression.
+
+### Enabling Compression
+
+Specify the `compress-zstd` subprotocol in the opening WebSocket handshake:
+
+```javascript client.js
+const client = new WebSocket(
+  "ws://localhost:80/websocket",
+  ['compress-zstd']
+);
+client.binaryType = "arraybuffer";
+
+client.onmessage = function(ev) {
+  if (typeof ev.data === 'string') {
+    // Uncompressed message - parse as JSON
+    const data = JSON.parse(ev.data);
+  } else if (ev.data instanceof ArrayBuffer) {
+    // Compressed message - decompress then parse
+    const decompressed = decompressZstd(ev.data);
+    const data = JSON.parse(decompressed);
+  }
+};
+```
+
+<Note>
+Compressed messages are sent as binary WebSocket frames (opcode=0x2), while regular messages are sent as text frames (opcode=0x1).
+</Note>
+
+## Message Frequencies
+
+Each message is published with a specific frequency:
+
+| Frequency | Meaning |
+|-----------|----------|
+| **Once** | Published only once, immediately after connection is established |
+| **Live** | Published immediately after the underlying data changes |
+| **Request** | Published in response to a specific client request |
+| **1s**, **60s**, **100ms** | Republished at regular intervals |
+| **Once + Live** | Published immediately on connection, then republished whenever data changes |
+
+## Queries
+
+Some messages are published on-demand in response to client requests.
+
+### Request Format
+
+```json
+{
+    "topic": "slot",
+    "key": "query",
+    "id": 42,
+    "params": {
+        "slot": 285291521
+    }
+}
+```
+
+<ResponseField name="topic" type="string" required>
+The topic to query.
+</ResponseField>
+
+<ResponseField name="key" type="string" required>
+The query method to call.
+</ResponseField>
+
+<ResponseField name="id" type="number" required>
+An unsigned integer (must fit in u64) that will be echoed back in the response.
+</ResponseField>
+
+<ResponseField name="params" type="object">
+Request-specific parameters documented for each query.
+</ResponseField>
+
+### Response Format
+
+```json
+{
+    "topic": "slot",
+    "key": "query",
+    "id": 42,
+    "value": { /* response data */ }
+}
+```
+
+If the requested data is not available, the value will be `null`:
+
+```json
+{
+    "topic": "slot",
+    "key": "query",
+    "id": 42,
+    "value": null
+}
+```
+
+<Note>
+If the client issues a malformed request, it will be forcibly disconnected.
+</Note>
+
+## Topics
+
+### Summary Topic
+
+High-level informational fields about the validator.
+
+#### `summary.version`
+
+**Frequency:** Once
+
+The current version of the running validator.
+
+```json
+{
+    "topic": "summary",
+    "key": "version",
+    "value": "0.106.11814"
+}
+```
+
+#### `summary.cluster`
+
+**Frequency:** Once + Live
+
+Indicates the cluster that the validator is running on.
+
+```json
+{
+    "topic": "summary",
+    "key": "cluster",
+    "value": "mainnet-beta"
+}
+```
+
+Possible values: `mainnet-beta`, `devnet`, `testnet`, `pythtest`, `pythnet`, `development`, or `unknown`.
+
+#### `summary.identity_key`
+
+**Frequency:** Once + Live
+
+The public identity key assigned to the running validator, encoded in base58.
+
+```json
+{
+    "topic": "summary",
+    "key": "identity_key",
+    "value": "Fe4StcZSQ228dKK2hni7aCP7ZprNhj8QKWzFe5usGFYF"
+}
+```
+
+#### `summary.vote_state`
+
+**Frequency:** Once + Live
+
+The current vote status of the validator.
+
+```json
+{
+    "topic": "summary",
+    "key": "vote_state",
+    "value": "voting"
+}
+```
+
+Possible values:
+- `voting` - Validator is actively voting
+- `non-voting` - Validator is not voting
+- `delinquent` - Last vote is 150+ slots behind
+
+#### `summary.root_slot`
+
+**Frequency:** Once + Live
+
+The last slot that was rooted. Rooted slots are fully confirmed and irreversible.
+
+```json
+{
+    "topic": "summary",
+    "key": "root_slot",
+    "value": 275138349
+}
+```
+
+#### `summary.completed_slot`
+
+**Frequency:** Once + Live
+
+The highest completed slot on the current fork choice of the validator.
+
+```json
+{
+    "topic": "summary",
+    "key": "completed_slot",
+    "value": 275138349
+}
+```
+
+#### `summary.estimated_tps`
+
+**Frequency:** Once + Live
+
+The estimated number of transactions per second (moving average from prior 150 slots, ~1 minute).
+
+```json
+{
+    "topic": "summary",
+    "key": "estimated_tps",
+    "value": {
+        "total": 8348,
+        "vote": 6875,
+        "nonvote_success": 1473,
+        "nonvote_failed": 0
+    }
+}
+```
+
+#### `summary.skip_rate`
+
+**Frequency:** Once + Live
+
+The skip rate for the current epoch.
+
+```json
+{
+    "topic": "summary",
+    "key": "skip_rate",
+    "value": {
+        "epoch": 522,
+        "skip_rate": 0.456172
+    }
+}
+```
+
+#### `summary.ping`
+
+**Frequency:** Request
+
+Application-level ping/pong (not a WebSocket control frame).
+
+**Request:**
+```json
+{
+    "topic": "summary",
+    "key": "ping",
+    "id": 42
+}
+```
+
+**Response:**
+```json
+{
+    "topic": "summary",
+    "key": "ping",
+    "id": 42,
+    "value": null
+}
+```
+
+### Slot Topic
+
+Information about blockchain slots and block production.
+
+#### Slot Levels
+
+Slots progress through five levels:
+
+<ResponseField name="incomplete" type="level">
+The slot does not exist yet or is still being replayed.
+</ResponseField>
+
+<ResponseField name="completed" type="level">
+The slot has been fully received and successfully replayed.
+</ResponseField>
+
+<ResponseField name="optimistically_confirmed" type="level">
+The slot has been replayed and more than two-thirds of stake have voted to confirm it.
+</ResponseField>
+
+<ResponseField name="rooted" type="level">
+The validator has rooted the slot and considers it final (32 subsequent slots built on top).
+</ResponseField>
+
+<ResponseField name="finalized" type="level">
+The validator has rooted the slot and more than two-thirds of stake has rooted it.
+</ResponseField>
+
+#### `slot.update`
+
+**Frequency:** Live
+
+Published whenever a slot's state changes.
+
+```json
+{
+    "topic": "slot",
+    "key": "update",
+    "value": {
+        "publish": {
+            "slot": 289245044,
+            "mine": true,
+            "skipped": false,
+            "duration_nanos": 400000000,
+            "completed_time_nanos": "1739657041688342791",
+            "level": "rooted",
+            "success_nonvote_transactions": 6821,
+            "failed_nonvote_transactions": 6746,
+            "success_vote_transactions": 3703,
+            "failed_vote_transactions": 0,
+            "compute_units": 47000000,
+            "shreds": 123,
+            "transaction_fee": "12345",
+            "priority_fee": "123456",
+            "tips": "0",
+            "vote_slot": 289245043
+        }
+    }
+}
+```
+
+#### `slot.query`
+
+**Frequency:** Request
+
+Query information about a specific slot.
+
+**Request:**
+```json
+{
+    "topic": "slot",
+    "key": "query",
+    "id": 32,
+    "params": {
+        "slot": 289245044
+    }
+}
+```
+
+**Response:**
+```json
+{
+    "topic": "slot",
+    "key": "query",
+    "id": 32,
+    "value": {
+        "publish": {
+            "slot": 289245044,
+            "mine": true,
+            "level": "rooted",
+            "success_nonvote_transactions": 6821,
+            /* ... additional fields ... */
+        }
+    }
+}
+```
+
+### Epoch Topic
+
+Information about epochs and leader schedules.
+
+#### `epoch.new`
+
+**Frequency:** Once + Live
+
+Published for each new epoch (current and next epoch on connection).
+
+```json
+{
+    "topic": "epoch",
+    "key": "new",
+    "value": {
+        "epoch": 636,
+        "start_time_nanos": "12412481240412",
+        "end_time_nanos": "1719910299914232",
+        "start_slot": 274752000,
+        "end_slot": 275183999,
+        "staked_pubkeys": [
+            "Fe4StcZSQ228dKK2hni7aCP7ZprNhj8QKWzFe5usGFYF",
+            /* ... more validators ... */
+        ],
+        "staked_lamports": [
+            "360",
+            "240",
+            /* ... more stakes ... */
+        ],
+        "leader_slots": [
+            15,
+            1542,
+            761,
+            /* ... slot assignments ... */
+        ]
+    }
+}
+```
+
+### Gossip Topic
+
+Information about the validator's gossip network connectivity.
+
+#### `gossip.network_stats`
+
+**Frequency:** Once + 300ms
+
+Aggregate statistics about gossip network health and connectivity.
+
+```json
+{
+    "topic": "gossip",
+    "key": "network_stats",
+    "value": {
+        "health": {
+            "total_stake": "411123000000000000",
+            "total_staked_peers": 911,
+            "total_unstaked_peers": 5334,
+            "connected_stake": "123456789",
+            "connected_staked_peers": 623,
+            "connected_unstaked_peers": 1432
+        },
+        "ingress": {
+            "total_throughput": 131204210,
+            "peer_names": ["Coinbase 02", "Figment", "Jupiter"],
+            "peer_identities": ["FDpbCB...", "FD7btg...", "FDXW..."],
+            "peer_throughput": [15121541, 11697591, 9131124]
+        },
+        "egress": {
+            "total_throughput": 131204210,
+            "peer_names": ["Coinbase 02", "Figment", "Jupiter"],
+            "peer_throughput": [15121541, 11697591, 9131124]
+        }
+    }
+}
+```
+
+### Peers Topic
+
+Information about validator peers from the cluster.
+
+#### `peers.update`
+
+**Frequency:** Once + 60s
+
+Peer validator information from gossip, accounts database, and on-chain config.
+
+```json
+{
+    "topic": "peers",
+    "key": "update",
+    "value": {
+        "update": [
+            {
+                "identity_pubkey": "Fe4StcZSQ228dKK2hni7aCP7ZprNhj8QKWzFe5usGFYF",
+                "gossip": {
+                    "version": "1.18.15",
+                    "feature_set": 4215500110,
+                    "shred_version": 0,
+                    "sockets": {
+                        "gossip": "93.119.195.160:8001",
+                        "tpu": "192.64.85.26:8000"
+                    },
+                    "country_code": "CN",
+                    "city_name": "Beijing"
+                },
+                "vote": [
+                    {
+                        "vote_pubkey": "8ri9HeWZv4Dcf4BD46pVPjmefzJLpbtfdAtyxyeG4enL",
+                        "activated_stake": "5812",
+                        "last_vote": 281795801,
+                        "root_slot": 281795770,
+                        "epoch_credits": 5917,
+                        "commission": 5,
+                        "delinquent": false
+                    }
+                ],
+                "info": {
+                    "name": "ExampleStake Firedancer",
+                    "details": "A longer description...",
+                    "website": "https://github.com/firedancer-io/firedancer",
+                    "icon_url": "https://docs.firedancer.io/fire.svg"
+                }
+            }
+        ],
+        "remove": []
+    }
+}
+```
+
+## Backpressure and Connection Management
+
+<Note>
+The server does not drop information, slow down, or stop publishing if a client cannot keep up. A client that reads too slowly will have its connection forcibly closed by the server.
+</Note>
+
+### Best Practices
+
+1. **Process messages asynchronously** - Don't block the message handler with heavy computation
+2. **Use compression** - Enable Zstandard compression for large messages
+3. **Monitor connection health** - Implement reconnection logic
+4. **Filter topics** - Only subscribe to the data you need (if supported)
+
+## Error Handling
+
+### Connection Errors
+
+```javascript
+client.onerror = (error) => {
+  console.error('WebSocket error:', error);
+};
+
+client.onclose = (event) => {
+  console.log('Connection closed:', event.code, event.reason);
+  // Implement reconnection logic here
+};
+```
+
+### Common Issues
+
+- **Connection forcibly closed** - Client cannot keep up with message rate
+- **Malformed request** - Invalid JSON or missing required fields in query
+- **Null response** - Requested data does not exist or is not available
+
+## Additional Resources
+
+- For complete field definitions and data structures, see the full WebSocket API specification
+- For monitoring and observability, use the [Metrics API](/api/metrics)
+- For production deployments, consider using the RPC API instead of WebSocket for stability

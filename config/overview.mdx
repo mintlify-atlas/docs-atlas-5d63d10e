@@ -1,0 +1,106 @@
+---
+title: Configuration Overview
+description: Learn how to configure Firedancer using TOML configuration files
+---
+
+Firedancer is configured via a [TOML](https://toml.io/en/) file. Almost all options have a recommended default value that is set automatically by Firedancer, and an operator needs only to specify values for options they wish to change.
+
+## Configuration File Location
+
+You can specify your configuration file in two ways:
+
+1. Set the `FIREDANCER_CONFIG_TOML` environment variable
+2. Pass it to commands with the `--config` option
+
+<Note>
+The same configuration file must be supplied to all commands, especially when configuring and later running the validator. Using a different file for different commands may cause them to fail.
+</Note>
+
+## Basic Configuration Example
+
+An example TOML file overriding select options needed for a new validator on testnet:
+
+<CodeGroup>
+```toml testnet.toml
+user = "firedancer"
+
+[gossip]
+    entrypoints = [
+        "entrypoint.testnet.solana.com:8001",
+        "entrypoint2.testnet.solana.com:8001",
+        "entrypoint3.testnet.solana.com:8001",
+    ]
+
+[consensus]
+    expected_genesis_hash = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+    known_validators = [
+        "5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on",
+        "dDzy5SR3AXdYWVqbDEkVFdvSPCtS9ihF5kJkHCtXoFs",
+        "Ft5fbkqNa76vnsjYNwjDZUXoTWpP7VYm3mtsaQckQADN",
+        "eoKpUABi59aT4rR9HGS3LcMecfut9x7zJyodWWP43YQ",
+        "9QxCLckBiJc783jnMvXZubK4wH86Eqqvashtrwvcsgkv",
+    ]
+    identity_path = "/home/firedancer/validator-keypair.json"
+    vote_account_path = "/home/firedancer/vote-keypair.json"
+
+[rpc]
+    port = 9099
+    full_api = true
+    private = true
+```
+</CodeGroup>
+
+## Core Configuration Fields
+
+<ParamField path="name" type="string" default="fd1">
+  Name of this Firedancer instance. This name serves as a unique token so that multiple Firedancer instances can run side by side without conflicting when they need to share a system or kernel namespace.
+</ParamField>
+
+<ParamField path="user" type="string" default="">
+  The operating system user to permission data and run Firedancer as. Firedancer will automatically determine a user to run as if none is provided. The user should be minimally permissioned and never a superuser or root.
+</ParamField>
+
+<ParamField path="scratch_directory" type="string" default="/home/{user}/.firedancer/{name}">
+  Absolute directory path to place scratch files used during setup and operation. The ledger and accounts databases will also be placed in here by default. Supports `{user}` and `{name}` substitutions.
+</ParamField>
+
+<ParamField path="dynamic_port_range" type="string" default="8900-9000">
+  Port range used for various incoming network listeners, in the form `<MIN_PORT>-<MAX_PORT>` inclusive. This port range should NOT overlap with any of the static ports used by Firedancer.
+</ParamField>
+
+## Migrating from Agave
+
+<Warning>
+The Agave validator is configured with command line options like `--identity identity.json --rpc-port 8899`. When migrating your scripts, these command line options will need to move to the corresponding configuration option in the TOML file.
+</Warning>
+
+Firedancer translates many configuration options to Agave command line arguments internally, allowing you to configure everything in one place.
+
+## Logging Configuration
+
+By default Firedancer maintains two logs:
+- **Permanent log**: Written to a file for long-term archival
+- **Ephemeral log**: Written to stderr for fast visual inspection
+
+```toml
+[log]
+    level_stderr = "INFO"
+    level_logfile = "INFO"
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Consensus Configuration" icon="handshake" href="/config/consensus">
+    Configure validator identity, voting, and consensus parameters
+  </Card>
+  <Card title="Network Configuration" icon="network-wired" href="/config/networking">
+    Set up network interfaces, XDP, and bandwidth settings
+  </Card>
+  <Card title="RPC Configuration" icon="server" href="/config/rpc">
+    Enable and configure JSON RPC and WebSocket APIs
+  </Card>
+  <Card title="Ledger Configuration" icon="database" href="/config/ledger">
+    Configure ledger storage, snapshots, and accounts
+  </Card>
+</CardGroup>
