@@ -1,0 +1,167 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Firedancer",
+  "projectDescription": "A high-performance Solana validator client built from scratch in C for speed, security, and client diversity",
+  "theme": "aspen",
+  "primaryColor": "#1ce7c2",
+  "lightColor": "#14b89e",
+  "darkColor": "#0fa387",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Introduction",
+            "pages": [
+              "introduction",
+              "why-firedancer",
+              "frankendancer"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "getting-started/installation",
+              "getting-started/hardware-requirements",
+              "getting-started/building",
+              "getting-started/configuration",
+              "getting-started/running"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/initialization",
+              "operations/monitoring",
+              "operations/troubleshooting",
+              "operations/networking",
+              "operations/permissions"
+            ]
+          },
+          {
+            "group": "Performance",
+            "pages": [
+              "performance/tuning",
+              "performance/benchmarking",
+              "performance/optimization"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/tile-system",
+              "architecture/components",
+              "architecture/security-model"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "CLI Reference",
+        "groups": [
+          {
+            "group": "Commands",
+            "pages": [
+              "cli/overview",
+              "cli/run",
+              "cli/monitor",
+              "cli/configure",
+              "cli/keys",
+              "cli/other-commands"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "config/overview",
+              "config/consensus",
+              "config/networking",
+              "config/rpc",
+              "config/ledger",
+              "config/tiles"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Components",
+            "pages": [
+              "api/ballet",
+              "api/disco",
+              "api/flamenco",
+              "api/tango",
+              "api/waltz"
+            ]
+          },
+          {
+            "group": "Monitoring",
+            "pages": [
+              "api/metrics",
+              "api/websocket"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Development",
+            "pages": [
+              "developer/setup",
+              "developer/code-style",
+              "developer/building",
+              "developer/testing"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "developer/contributing",
+              "developer/pull-requests",
+              "developer/security"
+            ]
+          },
+          {
+            "group": "Internals",
+            "pages": [
+              "internals/net-tile",
+              "internals/quic-tile",
+              "internals/verify-tile",
+              "internals/block-packing",
+              "internals/af-xdp"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "High-performance validator with low-latency architecture from trading systems",
+    "Kernel bypass networking with AF_XDP for maximum throughput",
+    "Tile-based architecture for security isolation and performance",
+    "Custom AVX512 cryptographic implementations (ED25519, SHA-512)",
+    "Frankendancer hybrid mode with Agave for incremental deployment",
+    "Strict sandboxing with seccomp for security",
+    "Independent C implementation for client diversity",
+    "CLI-based validator management with fdctl"
+  ],
+  "publicApiSurface": [
+    "fdctl run - Run the validator",
+    "fdctl monitor - Monitor validator performance",
+    "fdctl configure - Configure system for Firedancer",
+    "fdctl keys - Manage validator keys",
+    "Ballet - Cryptographic primitives library",
+    "Disco - Distributed compute and networking tiles",
+    "Flamenco - Solana protocol implementation",
+    "Tango - Inter-process communication framework",
+    "Waltz - Network protocol implementations",
+    "Metrics API - Prometheus-compatible metrics",
+    "WebSocket API - Real-time validator status"
+  ]
+}
